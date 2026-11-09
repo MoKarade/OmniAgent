@@ -200,12 +200,12 @@ class OmniAgentViewModel(
     fun applyFriendlySuggestion(suggestion: FriendlyMissionSuggestion) {
         _uiState.update { current ->
             val dynamicProfile = SystemInstructionsProvider.buildDynamicPromptProfile(
-                mission = suggestion.missionPrompt,
+                mission = suggestion.userPrompt,
                 allowedCategories = current.allowedMcpCategories
             )
             current.copy(
-                userMission = suggestion.missionPrompt,
-                submittedMission = suggestion.missionPrompt,
+                userMission = suggestion.userPrompt,
+                submittedMission = suggestion.userPrompt,
                 missionCompletedSummary = null,
                 errorMessage = null,
                 activePromptProfile = dynamicProfile,
@@ -522,10 +522,9 @@ class OmniAgentViewModel(
                     source = "app",
                     learnedNote = "⚡ Exécution directe Fast-Path (${fastPathResult.queueLatencyMs} ms)",
                     appLaunchAction = LiaAppLaunchAction(
-                        packageName = fastPathResult.targetPackageOrUri,
                         appLabel = fastPathResult.resolvedActionLabel,
-                        isInstantShortcut = true,
-                        latencyMs = fastPathResult.queueLatencyMs
+                        packageName = fastPathResult.targetPackageOrUri,
+                        learnedSpeedMs = fastPathResult.queueLatencyMs
                     )
                 )
                 LiaMemoryAndHistoryStore.appendMessage(userMsg)
@@ -621,7 +620,7 @@ class OmniAgentViewModel(
             val stepResult = CognitiveStepResult(
                 stepIndex = nextIndex,
                 observation = dlpReport.sanitizedText,
-                thought = outcome.learnedNote ?: "Réponse synthétisée avec contexte personnel et outils MCP.",
+                thought = outcome.learnedBadge ?: "Réponse synthétisée avec contexte personnel et outils MCP.",
                 subgoal = launchAction?.let { "Action : ${it.appLabel}" } ?: "Réponse directe à l'utilisateur",
                 action = AtomicAction(
                     tool = if (launchAction != null) "open_app" else "chat_reply",

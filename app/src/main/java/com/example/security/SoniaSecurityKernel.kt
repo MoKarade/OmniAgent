@@ -65,6 +65,9 @@ object SoniaSecurityKernel {
     private val auditBlockCounter = AtomicInteger(0)
 
     @Volatile
+    private var appContextRef: Context? = null
+
+    @Volatile
     var isVaultLockedRuntime: Boolean = false
         private set
 
@@ -91,6 +94,7 @@ object SoniaSecurityKernel {
     private val safeAppLabelRegex = Regex("^[\\p{L}0-9 _.-]{1,60}$")
 
     fun initVaultState(context: Context) {
+        appContextRef = context.applicationContext
         val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
         val hasPin = !prefs.getString(KEY_PIN_HASH, null).isNullOrBlank()
         isVaultLockedRuntime = hasPin && prefs.getBoolean(KEY_VAULT_LOCKED, false)
@@ -100,12 +104,14 @@ object SoniaSecurityKernel {
     }
 
     fun isUserPinConfigured(context: Context): Boolean {
+        appContextRef = context.applicationContext
         val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
         return !prefs.getString(KEY_PIN_HASH, null).isNullOrBlank() &&
             !prefs.getString(KEY_PIN_SALT, null).isNullOrBlank()
     }
 
     fun setOrUpdateUserPin(context: Context, newPin: String): Boolean {
+        appContextRef = context.applicationContext
         val trimmed = newPin.trim()
         if (trimmed.length < 4 || trimmed.length > 12 || !trimmed.all { it.isDigit() }) {
             return false
@@ -125,6 +131,7 @@ object SoniaSecurityKernel {
     }
 
     fun verifyUserPin(context: Context, candidatePin: String): Boolean {
+        appContextRef = context.applicationContext
         val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
         val saltHex = prefs.getString(KEY_PIN_SALT, null) ?: return false
         val expectedHashHex = prefs.getString(KEY_PIN_HASH, null) ?: return false
@@ -142,6 +149,7 @@ object SoniaSecurityKernel {
     }
 
     fun lockVault(context: Context): Boolean {
+        appContextRef = context.applicationContext
         if (!isUserPinConfigured(context)) return false
         isVaultLockedRuntime = true
         context.applicationContext
@@ -152,7 +160,13 @@ object SoniaSecurityKernel {
         return true
     }
 
+    fun lockVault(): Boolean {
+        val ctx = appContextRef ?: return false
+        return lockVault(ctx)
+    }
+
     fun unlockVault(context: Context) {
+        appContextRef = context.applicationContext
         isVaultLockedRuntime = false
         context.applicationContext
             .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
@@ -168,6 +182,7 @@ object SoniaSecurityKernel {
     fun getAuditBlockCount(): Int = auditBlockCounter.get()
 
     fun clearUserPin(context: Context) {
+        appContextRef = context.applicationContext
         isVaultLockedRuntime = false
         context.applicationContext
             .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
@@ -179,6 +194,7 @@ object SoniaSecurityKernel {
     }
 
     fun updateGlobalPolicy(context: Context, mode: GlobalAccessPolicyMode) {
+        appContextRef = context.applicationContext
         globalPolicyRuntime = mode
         context.applicationContext
             .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
@@ -189,7 +205,7 @@ object SoniaSecurityKernel {
 
     fun updateGlobalPolicy(mode: GlobalAccessPolicyMode) {
         globalPolicyRuntime = mode
-        LiaMemoryAndHistoryStore.getApplicationContextOrNull()?.let { ctx ->
+        appContextRef?.let { ctx ->
             updateGlobalPolicy(ctx, mode)
         }
     }
