@@ -1,0 +1,6 @@
+{
+  "name": "LIA",
+  "description": "Assistante IA personnelle autonome sur Android avec mémoire évolutive, base de données personnelle, envoi direct de SMS et bulle flottante système.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

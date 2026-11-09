@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">LIA</string>
+    <string name="nav_console">Chat</string>
+    <string name="nav_app_access">Autorisations</string>
+    <string name="nav_agents_tasks">Agents</string>
+    <string name="nav_mcp">Données</string>
+    <string name="nav_security">Sécurité</string>
+    <string name="header_subtitle">Assistant Personnel Visuel</string>
+    <string name="label_mission_input">Votre message</string>
+    <string name="placeholder_mission">Posez une question ou donnez une consigne…</string>
+    <string name="btn_step_cycle">Exécuter</string>
+    <string name="btn_auto_pilot">Auto</string>
+    <string name="btn_stop_pilot">Stop</string>
+    <string name="btn_run_all_agents">Tous</string>
+    <string name="btn_fast_triage">Triage</string>
+    <string name="btn_security_audit">Sécurité</string>
+    <string name="btn_reset_session">Effacer</string>
+    <string name="btn_upload_screenshot">Image</string>
+    <string name="label_som_overlay">Cibles</string>
+    <string name="label_loop_trap">Test Boucle</string>
+    <string name="section_cognitive_stream">Activité</string>
+    <string name="section_mcp_vault">Données</string>
+    <string name="section_system_prompt">Règles</string>
+    <string name="hitl_dialog_title">Confirmation</string>
+    <string name="hitl_approve">Autoriser</string>
+    <string name="hitl_deny">Refuser</string>
+    <string name="copy_system_prompt">Copier</string>
+    <string name="btn_google_sign_in">Connexion Google</string>
+    <string name="btn_cloud_sync">Cloud</string>
+    <string name="btn_sign_out">Compte</string>
+</resources>

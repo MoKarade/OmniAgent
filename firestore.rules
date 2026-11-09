@@ -1,0 +1,105 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Global deny-by-default fallback
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 1. Global Helper Functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // 2. Entity Validators
+    function isValidMcpRecord(data, ownerUid) {
+      return data.keys().hasAll(['category', 'title', 'subtitle', 'content', 'userId', 'createdAt'])
+        && data.keys().hasOnly(['category', 'title', 'subtitle', 'content', 'userId', 'createdAt'])
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 40
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.subtitle is string && data.subtitle.size() >= 1 && data.subtitle.size() <= 160
+        && data.content is string && data.content.size() >= 1 && data.content.size() <= 2000
+        && data.userId is string && data.userId == ownerUid
+        && data.createdAt is timestamp;
+    }
+
+    function isValidCognitiveLog(data, ownerUid) {
+      return data.keys().hasAll([
+          'stepIndex',
+          'observation',
+          'thought',
+          'subgoal',
+          'formattedAction',
+          'securityPosture',
+          'executionOutcome',
+          'userId',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'stepIndex',
+          'observation',
+          'thought',
+          'subgoal',
+          'formattedAction',
+          'securityPosture',
+          'executionOutcome',
+          'userId',
+          'createdAt'
+        ])
+        && data.stepIndex is int && data.stepIndex >= 1 && data.stepIndex <= 10000
+        && data.observation is string && data.observation.size() >= 1 && data.observation.size() <= 2000
+        && data.thought is string && data.thought.size() >= 1 && data.thought.size() <= 4000
+        && data.subgoal is string && data.subgoal.size() >= 1 && data.subgoal.size() <= 1000
+        && data.formattedAction is string && data.formattedAction.size() >= 1 && data.formattedAction.size() <= 1000
+        && data.securityPosture is string && data.securityPosture.size() >= 1 && data.securityPosture.size() <= 80
+        && data.executionOutcome is string && data.executionOutcome.size() >= 1 && data.executionOutcome.size() <= 2000
+        && data.userId is string && data.userId == ownerUid
+        && data.createdAt is timestamp;
+    }
+
+    // 3. User-Owned Subcollections
+    match /users/{userId}/mcp_records/{recordId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(recordId)
+        && isValidMcpRecord(incoming(), userId)
+        && incoming().createdAt == request.time;
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(recordId)
+        && isValidMcpRecord(incoming(), userId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId}/cognitive_logs/{logId} {
+      allow get, list: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(logId)
+        && isValidCognitiveLog(incoming(), userId)
+        && incoming().createdAt == request.time;
+      allow update: if isSignedIn()
+        && request.auth.uid == userId
+        && isValidId(logId)
+        && isValidCognitiveLog(incoming(), userId)
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+  }
+}

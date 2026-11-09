@@ -1,0 +1,106 @@
+{
+  "entities": {
+    "McpRecordDocument": {
+      "title": "MCP Personal Data Record",
+      "description": "Local & Cloud-synced personal data record accessible via the query_personal_data MCP tool.",
+      "type": "object",
+      "properties": {
+        "category": {
+          "type": "string",
+          "description": "MCP Category (CONTACTS, CALENDAR, NOTES, MESSAGES)"
+        },
+        "title": {
+          "type": "string",
+          "description": "Record title"
+        },
+        "subtitle": {
+          "type": "string",
+          "description": "Record subtitle or metadata"
+        },
+        "content": {
+          "type": "string",
+          "description": "Full text content of the personal record"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated owner"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of creation"
+        }
+      },
+      "required": ["category", "title", "subtitle", "content", "userId", "createdAt"]
+    },
+    "CognitiveLogDocument": {
+      "title": "Cognitive Step Audit Log",
+      "description": "Persisted Observation -> Thought -> Subgoal -> Action step executed by OmniAgent OS.",
+      "type": "object",
+      "properties": {
+        "stepIndex": {
+          "type": "integer",
+          "description": "Sequential step index in the mission"
+        },
+        "observation": {
+          "type": "string",
+          "description": "Visual observation of the smartphone screen"
+        },
+        "thought": {
+          "type": "string",
+          "description": "Internal reasoning and security analysis"
+        },
+        "subgoal": {
+          "type": "string",
+          "description": "Immediate subgoal on the current screen"
+        },
+        "formattedAction": {
+          "type": "string",
+          "description": "Formatted atomic primitive call"
+        },
+        "securityPosture": {
+          "type": "string",
+          "description": "Security posture (SAFE, HUMAN_CONFIRMATION_REQUIRED, INJECTION_NEUTRALIZED, LOOP_RECOVERY)"
+        },
+        "executionOutcome": {
+          "type": "string",
+          "description": "Result of executing the atomic action"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the authenticated owner"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of log creation"
+        }
+      },
+      "required": [
+        "stepIndex",
+        "observation",
+        "thought",
+        "subgoal",
+        "formattedAction",
+        "securityPosture",
+        "executionOutcome",
+        "userId",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}/mcp_records/{recordId}": {
+      "schema": {
+        "$ref": "#/entities/McpRecordDocument"
+      },
+      "description": "User-owned MCP personal data vault records."
+    },
+    "/users/{userId}/cognitive_logs/{logId}": {
+      "schema": {
+        "$ref": "#/entities/CognitiveLogDocument"
+      },
+      "description": "User-owned cognitive reasoning audit logs."
+    }
+  }
+}

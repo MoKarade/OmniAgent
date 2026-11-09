@@ -1,0 +1,18 @@
+{
+  "firestore": [
+    {
+      "database": "ai-studio-android-omniagen-a5ccf63f-cfc6-4ef3-8fc6-e272eb34b0a6",
+      "rules": "firestore.rules"
+    }
+  ],
+  "emulators": {
+    "auth": {
+      "port": 9099,
+      "host": "127.0.0.1"
+    },
+    "firestore": {
+      "port": 8085,
+      "host": "127.0.0.1"
+    }
+  }
+}
