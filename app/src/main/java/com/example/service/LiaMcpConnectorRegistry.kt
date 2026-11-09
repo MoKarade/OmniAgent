@@ -71,12 +71,61 @@ data class McpToolExecutionOutcome(
     val timestamp: String = currentTimeFormatted()
 )
 
+enum class McpDebugLogLevel(val labelFr: String, val badgeEmoji: String) {
+    SUCCESS("Exécuté", "✅"),
+    INFO("Info", "ℹ️"),
+    WARNING("Bloqué / Permission", "🛡️"),
+    ERROR("Erreur", "⚠️")
+}
+
+data class McpDebugLogEntry(
+    val id: String = "log_${System.currentTimeMillis()}_${(100..999).random()}",
+    val timestamp: String = currentTimeFormatted(),
+    val category: String,
+    val title: String,
+    val detail: String,
+    val toolOrPackageId: String = "",
+    val latencyMs: Long = 12L,
+    val level: McpDebugLogLevel = McpDebugLogLevel.INFO
+)
+
+enum class LiaReasoningDepthMode(val labelFr: String, val descriptionFr: String) {
+    ADAPTIVE("Adaptatif intelligent", "Ajuste automatiquement la réflexion selon la demande"),
+    FAST_DIRECT("Direct & Instantané", "Privilégie les actions rapides sans délibération longue"),
+    DEEP_CHAIN("Réflexion approfondie", "Analyse détaillée étape par étape pour les tâches complexes")
+}
+
+enum class LiaResponseToneStyle(val labelFr: String, val descriptionFr: String) {
+    NATURAL_CONCISE("Naturel & Concis", "Réponses claires, chaleureuses et sans jargon"),
+    DETAILED_COACH("Explicatif & Détaillé", "Détaille chaque action et propose des suivis"),
+    ULTRA_BRIEF("Action pure", "Confirmation minimale en une seule phrase")
+}
+
+data class LiaAiPreferences(
+    val reasoningDepthMode: LiaReasoningDepthMode = LiaReasoningDepthMode.ADAPTIVE,
+    val responseToneStyle: LiaResponseToneStyle = LiaResponseToneStyle.NATURAL_CONCISE,
+    val fastPathEnabled: Boolean = true,
+    val autoMemoryRagEnabled: Boolean = true,
+    val proactiveSuggestionsEnabled: Boolean = true,
+    val requireSmsConfirmation: Boolean = true,
+    val captureVerboseDebugLogs: Boolean = true
+)
+
 data class McpConnectorRegistryState(
     val connectors: List<McpAppConnector> = emptyList(),
     val lastExecution: McpToolExecutionOutcome? = null,
     val totalDynamicToolsCount: Int = 0,
-    val lastRefreshedAt: String = ""
-)
+    val lastRefreshedAt: String = "",
+    val disabledConnectorIds: Set<String> = emptySet(),
+    val disabledToolIds: Set<String> = emptySet(),
+    val confirmationRequiredToolIds: Set<String> = setOf("whatsapp.send_message", "messenger.send_message", "gmail.compose_email"),
+    val debugLogs: List<McpDebugLogEntry> = emptyList(),
+    val aiPreferences: LiaAiPreferences = LiaAiPreferences()
+) {
+    fun isConnectorAllowed(connectorId: String): Boolean = !disabledConnectorIds.contains(connectorId)
+    fun isToolAllowed(connectorId: String, toolId: String): Boolean =
+        !disabledConnectorIds.contains(connectorId) && !disabledToolIds.contains(toolId)
+}
 
 /**
  * Architecture de Connecteurs MCP (Model Context Protocol) de LIA :
@@ -89,14 +138,249 @@ data class McpConnectorRegistryState(
  */
 object LiaMcpConnectorRegistry {
 
-    private val _state = MutableStateFlow(McpConnectorRegistryState())
+    private const val PREFS_NAME = "lia_isolated_settings_mcp_prefs"
+    private const val KEY_DISABLED_CONNECTORS = "disabled_connectors"
+    private const val KEY_DISABLED_TOOLS = "disabled_tools"
+    private const val KEY_CONFIRM_TOOLS = "confirm_tools"
+    private const val KEY_REASONING_MODE = "ai_reasoning_mode"
+    private const val KEY_TONE_STYLE = "ai_tone_style"
+    private const val KEY_FAST_PATH = "ai_fast_path"
+    private const val KEY_AUTO_MEMORY = "ai_auto_memory"
+    private const val KEY_PROACTIVE = "ai_proactive"
+    private const val KEY_CONFIRM_SMS = "ai_confirm_sms"
+    private const val KEY_VERBOSE_LOGS = "ai_verbose_logs"
+
+    private var prefsLoaded = false
+
+    private val _state = MutableStateFlow(
+        McpConnectorRegistryState(
+            debugLogs = listOf(
+                McpDebugLogEntry(
+                    id = "boot_mcp_init",
+                    category = "MCP",
+                    title = "Registre MCP initialisé",
+                    detail = "Détection dynamique des applications installées et génération des outils natifs prêtes.",
+                    toolOrPackageId = "mcp.core",
+                    latencyMs = 8L,
+                    level = McpDebugLogLevel.SUCCESS
+                ),
+                McpDebugLogEntry(
+                    id = "boot_fast_path",
+                    category = "FAST-PATH",
+                    title = "File d'exécution rapide active",
+                    detail = "Les actions système courantes contournent la latence LLM tout en vérifiant les permissions MCP.",
+                    toolOrPackageId = "dispatcher.fast_path",
+                    latencyMs = 4L,
+                    level = McpDebugLogLevel.INFO
+                )
+            )
+        )
+    )
     val state: StateFlow<McpConnectorRegistryState> = _state.asStateFlow()
+
+    private fun ensurePrefsLoaded(context: Context?) {
+        if (prefsLoaded || context == null) return
+        prefsLoaded = true
+        runCatching {
+            val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val disabledConnectors = prefs.getStringSet(KEY_DISABLED_CONNECTORS, emptySet())?.toSet() ?: emptySet()
+            val disabledTools = prefs.getStringSet(KEY_DISABLED_TOOLS, emptySet())?.toSet() ?: emptySet()
+            val confirmTools = prefs.getStringSet(
+                KEY_CONFIRM_TOOLS,
+                setOf("whatsapp.send_message", "messenger.send_message", "gmail.compose_email")
+            )?.toSet() ?: emptySet()
+
+            val reasoningName = prefs.getString(KEY_REASONING_MODE, LiaReasoningDepthMode.ADAPTIVE.name)
+            val toneName = prefs.getString(KEY_TONE_STYLE, LiaResponseToneStyle.NATURAL_CONCISE.name)
+            val aiPrefs = LiaAiPreferences(
+                reasoningDepthMode = runCatching { LiaReasoningDepthMode.valueOf(reasoningName!!) }
+                    .getOrDefault(LiaReasoningDepthMode.ADAPTIVE),
+                responseToneStyle = runCatching { LiaResponseToneStyle.valueOf(toneName!!) }
+                    .getOrDefault(LiaResponseToneStyle.NATURAL_CONCISE),
+                fastPathEnabled = prefs.getBoolean(KEY_FAST_PATH, true),
+                autoMemoryRagEnabled = prefs.getBoolean(KEY_AUTO_MEMORY, true),
+                proactiveSuggestionsEnabled = prefs.getBoolean(KEY_PROACTIVE, true),
+                requireSmsConfirmation = prefs.getBoolean(KEY_CONFIRM_SMS, true),
+                captureVerboseDebugLogs = prefs.getBoolean(KEY_VERBOSE_LOGS, true)
+            )
+            _state.update {
+                it.copy(
+                    disabledConnectorIds = disabledConnectors,
+                    disabledToolIds = disabledTools,
+                    confirmationRequiredToolIds = confirmTools,
+                    aiPreferences = aiPrefs
+                )
+            }
+        }
+    }
+
+    private fun persistSettings(context: Context?) {
+        val ctx = context ?: LiaMemoryAndHistoryStore.getApplicationContextOrNull() ?: return
+        val current = _state.value
+        runCatching {
+            ctx.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putStringSet(KEY_DISABLED_CONNECTORS, current.disabledConnectorIds)
+                .putStringSet(KEY_DISABLED_TOOLS, current.disabledToolIds)
+                .putStringSet(KEY_CONFIRM_TOOLS, current.confirmationRequiredToolIds)
+                .putString(KEY_REASONING_MODE, current.aiPreferences.reasoningDepthMode.name)
+                .putString(KEY_TONE_STYLE, current.aiPreferences.responseToneStyle.name)
+                .putBoolean(KEY_FAST_PATH, current.aiPreferences.fastPathEnabled)
+                .putBoolean(KEY_AUTO_MEMORY, current.aiPreferences.autoMemoryRagEnabled)
+                .putBoolean(KEY_PROACTIVE, current.aiPreferences.proactiveSuggestionsEnabled)
+                .putBoolean(KEY_CONFIRM_SMS, current.aiPreferences.requireSmsConfirmation)
+                .putBoolean(KEY_VERBOSE_LOGS, current.aiPreferences.captureVerboseDebugLogs)
+                .apply()
+        }
+    }
+
+    fun recordDebugLog(
+        category: String,
+        title: String,
+        detail: String,
+        toolOrPackageId: String = "",
+        latencyMs: Long = 10L,
+        level: McpDebugLogLevel = McpDebugLogLevel.INFO
+    ) {
+        if (!_state.value.aiPreferences.captureVerboseDebugLogs && level == McpDebugLogLevel.INFO) {
+            return
+        }
+        val entry = McpDebugLogEntry(
+            category = category,
+            title = title,
+            detail = detail,
+            toolOrPackageId = toolOrPackageId,
+            latencyMs = latencyMs,
+            level = level
+        )
+        _state.update { current ->
+            current.copy(debugLogs = (listOf(entry) + current.debugLogs).take(120))
+        }
+    }
+
+    fun clearDebugLogs() {
+        _state.update { it.copy(debugLogs = emptyList()) }
+    }
+
+    fun setConnectorPermission(context: Context?, connectorId: String, enabled: Boolean) {
+        _state.update { current ->
+            val updated = if (enabled) {
+                current.disabledConnectorIds - connectorId
+            } else {
+                current.disabledConnectorIds + connectorId
+            }
+            current.copy(disabledConnectorIds = updated)
+        }
+        persistSettings(context)
+        recordDebugLog(
+            category = "MCP-PERMISSION",
+            title = if (enabled) "Connecteur autorisé" else "Connecteur désactivé",
+            detail = "Connecteur $connectorId ${if (enabled) "activé" else "bloqué"} par l'utilisateur dans Paramètres.",
+            toolOrPackageId = connectorId,
+            latencyMs = 2L,
+            level = if (enabled) McpDebugLogLevel.SUCCESS else McpDebugLogLevel.WARNING
+        )
+    }
+
+    fun setToolPermission(context: Context?, toolId: String, enabled: Boolean) {
+        _state.update { current ->
+            val updated = if (enabled) {
+                current.disabledToolIds - toolId
+            } else {
+                current.disabledToolIds + toolId
+            }
+            current.copy(disabledToolIds = updated)
+        }
+        persistSettings(context)
+        recordDebugLog(
+            category = "MCP-PERMISSION",
+            title = if (enabled) "Outil MCP autorisé" else "Outil MCP révoqué",
+            detail = "Outil $toolId ${if (enabled) "autorisé" else "interdit"} pour LIA.",
+            toolOrPackageId = toolId,
+            latencyMs = 2L,
+            level = if (enabled) McpDebugLogLevel.SUCCESS else McpDebugLogLevel.WARNING
+        )
+    }
+
+    fun toggleToolConfirmationRequired(context: Context?, toolId: String) {
+        var nowRequired = false
+        _state.update { current ->
+            nowRequired = !current.confirmationRequiredToolIds.contains(toolId)
+            val updated = if (nowRequired) {
+                current.confirmationRequiredToolIds + toolId
+            } else {
+                current.confirmationRequiredToolIds - toolId
+            }
+            current.copy(confirmationRequiredToolIds = updated)
+        }
+        persistSettings(context)
+        recordDebugLog(
+            category = "MCP-PERMISSION",
+            title = if (nowRequired) "Confirmation activée" else "Exécution directe activée",
+            detail = "Outil $toolId : ${if (nowRequired) "confirmation requise" else "exécution directe sans pause"}.",
+            toolOrPackageId = toolId,
+            latencyMs = 2L,
+            level = McpDebugLogLevel.INFO
+        )
+    }
+
+    fun setAllMcpPermissions(context: Context?, allowAll: Boolean) {
+        _state.update { current ->
+            if (allowAll) {
+                current.copy(
+                    disabledConnectorIds = emptySet(),
+                    disabledToolIds = emptySet()
+                )
+            } else {
+                // Mode lecture seule : désactive les outils d'envoi/écriture (.share, send_message, create_note, compose_email)
+                val writeTools = current.connectors.flatMap { it.tools }
+                    .filter {
+                        it.toolId.contains("send") ||
+                            it.toolId.contains("share") ||
+                            it.toolId.contains("create") ||
+                            it.toolId.contains("compose")
+                    }
+                    .map { it.toolId }
+                    .toSet()
+                current.copy(disabledToolIds = writeTools)
+            }
+        }
+        persistSettings(context)
+        recordDebugLog(
+            category = "MCP-PERMISSION",
+            title = if (allowAll) "Tous les outils MCP autorisés" else "Profil lecture seule activé",
+            detail = if (allowAll) {
+                "Accès complet rétabli pour l'ensemble des connecteurs et outils MCP."
+            } else {
+                "Les outils d'écriture et d'envoi externe ont été restreints."
+            },
+            toolOrPackageId = "mcp.policy",
+            latencyMs = 3L,
+            level = if (allowAll) McpDebugLogLevel.SUCCESS else McpDebugLogLevel.WARNING
+        )
+    }
+
+    fun updateAiPreferences(context: Context?, transform: (LiaAiPreferences) -> LiaAiPreferences) {
+        _state.update { current ->
+            current.copy(aiPreferences = transform(current.aiPreferences))
+        }
+        persistSettings(context)
+        recordDebugLog(
+            category = "IA-PREFS",
+            title = "Préférences de l'IA mises à jour",
+            detail = "Mode: ${_state.value.aiPreferences.reasoningDepthMode.labelFr} • Ton: ${_state.value.aiPreferences.responseToneStyle.labelFr}",
+            toolOrPackageId = "lia.ai.preferences",
+            latencyMs = 2L,
+            level = McpDebugLogLevel.INFO
+        )
+    }
 
     /**
      * Rafraîchit la liste complète des connecteurs MCP et génère les outils dynamiques
      * pour chaque application installée détectée sur le téléphone.
      */
     fun refreshConnectors(context: Context? = LiaMemoryAndHistoryStore.getApplicationContextOrNull()): List<McpAppConnector> {
+        ensurePrefsLoaded(context)
         val installedApps = if (context != null) {
             LiaUniversalAppsAndGoogleHub.refreshAllInstalledPhoneApps(context)
         } else {
@@ -630,6 +914,8 @@ object LiaMcpConnectorRegistry {
         toolId: String,
         arguments: Map<String, String> = emptyMap()
     ): McpToolExecutionOutcome? {
+        val startMs = System.currentTimeMillis()
+        ensurePrefsLoaded(context)
         val connectors = if (_state.value.connectors.isEmpty()) {
             refreshConnectors(context)
         } else {
@@ -637,6 +923,27 @@ object LiaMcpConnectorRegistry {
         }
         val connector = connectors.firstOrNull { c -> c.tools.any { it.toolId == toolId } } ?: return null
         val tool = connector.tools.first { it.toolId == toolId }
+
+        // Vérification des permissions des outils MCP configurées dans Paramètres
+        if (!_state.value.isToolAllowed(connector.connectorId, tool.toolId)) {
+            val blockedOutcome = McpToolExecutionOutcome(
+                connector = connector,
+                tool = tool,
+                executed = false,
+                naturalReplyFr = "🛡️ L'action **« ${tool.titleFr} »** (${connector.appName}) est actuellement désactivée dans vos **Paramètres → Permissions des outils MCP**.",
+                badgeFr = "🛡️ Outil MCP désactivé dans Paramètres"
+            )
+            recordDebugLog(
+                category = "MCP-BLOQUÉ",
+                title = "Outil bloqué : ${tool.titleFr}",
+                detail = "Exécution refusée pour ${tool.toolId} (${connector.appName}) selon vos préférences de permissions MCP.",
+                toolOrPackageId = tool.toolId,
+                latencyMs = (System.currentTimeMillis() - startMs).coerceAtLeast(1L),
+                level = McpDebugLogLevel.WARNING
+            )
+            _state.update { it.copy(lastExecution = blockedOutcome) }
+            return blockedOutcome
+        }
 
         val outcome: McpToolExecutionOutcome = when (toolId) {
             "keep.create_note", "keep.create_checklist" -> {
@@ -1023,6 +1330,20 @@ object LiaMcpConnectorRegistry {
             }
         }
 
+        val elapsedMs = (System.currentTimeMillis() - startMs).coerceAtLeast(3L)
+        val argsPreview = if (arguments.isEmpty()) {
+            "Aucun paramètre"
+        } else {
+            arguments.entries.joinToString(", ") { "${it.key}=\"${it.value.take(36)}\"" }
+        }
+        recordDebugLog(
+            category = "MCP-EXEC",
+            title = "${connector.iconEmoji} ${tool.titleFr} (${connector.appName})",
+            detail = "Outil: ${tool.toolId} • Paramètres: $argsPreview • Réponse: ${outcome.badgeFr}",
+            toolOrPackageId = tool.toolId,
+            latencyMs = elapsedMs,
+            level = McpDebugLogLevel.SUCCESS
+        )
         _state.update { it.copy(lastExecution = outcome) }
         return outcome
     }

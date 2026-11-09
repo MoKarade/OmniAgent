@@ -416,10 +416,13 @@ fun OperatorConsoleScreen(
                         )
                     }
 
-                    // BARRE DYNAMIQUE DES APPLICATIONS CONNECTÉES (Architecture MCP : WhatsApp, Messenger, Keep, Services Google, etc.)
-                    if (mcpRegistry.connectors.isNotEmpty()) {
+                    // BARRE DYNAMIQUE DES APPLICATIONS CONNECTÉES (Filtrée selon les permissions MCP de Paramètres)
+                    val activeMcpConnectors = remember(mcpRegistry.connectors, mcpRegistry.disabledConnectorIds) {
+                        mcpRegistry.connectors.filter { mcpRegistry.isConnectorAllowed(it.connectorId) }
+                    }
+                    if (activeMcpConnectors.isNotEmpty()) {
                         com.example.ui.components.LiaConnectedAppsNaturalBar(
-                            connectors = mcpRegistry.connectors,
+                            connectors = activeMcpConnectors,
                             onExecuteNaturalCommand = { cmd ->
                                 viewModel.updateMissionText(cmd)
                                 viewModel.executeSingleCognitiveStep()
@@ -465,15 +468,17 @@ fun OperatorConsoleScreen(
                         )
                     }
 
-                    // Suggestions personnalisées (« Pour vous »)
-                    com.example.ui.components.LiaProactiveRagActionCardsSection(
-                        cards = liaMemory.proactiveRagActionCards,
-                        souvenirsCount = liaMemory.souvenirs.size + liaMemory.longTermMemories.size,
-                        onExecuteCard = { card ->
-                            viewModel.updateMissionText(card.commandPrompt)
-                            viewModel.executeSingleCognitiveStep()
-                        }
-                    )
+                    // Suggestions personnalisées (« Pour vous » — contrôlées depuis Paramètres > Préférences IA)
+                    if (mcpRegistry.aiPreferences.proactiveSuggestionsEnabled) {
+                        com.example.ui.components.LiaProactiveRagActionCardsSection(
+                            cards = liaMemory.proactiveRagActionCards,
+                            souvenirsCount = liaMemory.souvenirs.size + liaMemory.longTermMemories.size,
+                            onExecuteCard = { card ->
+                                viewModel.updateMissionText(card.commandPrompt)
+                                viewModel.executeSingleCognitiveStep()
+                            }
+                        )
+                    }
 
                     // Suggestions naturelles en 1 geste
                     val quickConsumerSuggestions = remember {

@@ -37,17 +37,13 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.material.icons.filled.CloudDone
-import androidx.compose.material.icons.filled.CloudSync
-import androidx.compose.material.icons.filled.Key
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.SmartToy
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -86,6 +82,7 @@ import com.example.ui.auth.AuthScreen
 import com.example.ui.components.ApiKeyConfigDialog
 import com.example.ui.screens.AgentFleetAndHistoryScreen
 import com.example.ui.screens.AppAccessControlScreen
+import com.example.ui.screens.LiaSettingsScreen
 import com.example.ui.screens.OperatorConsoleScreen
 import com.example.ui.theme.ActionEmerald
 import com.example.ui.theme.GoogleBackground
@@ -109,6 +106,7 @@ enum class OmniDestination(
     val unselectedIcon: ImageVector
 ) {
     CONSOLE("console", R.string.nav_console, Icons.Filled.ChatBubble, Icons.Outlined.ChatBubbleOutline),
+    SETTINGS("settings", R.string.nav_console, Icons.Filled.Settings, Icons.Outlined.Settings),
     APP_ACCESS("app_access", R.string.nav_app_access, Icons.Filled.Shield, Icons.Outlined.Shield),
     AGENTS_TASKS("agents_tasks", R.string.nav_agents_tasks, Icons.Filled.SmartToy, Icons.Outlined.SmartToy)
 }
@@ -370,179 +368,57 @@ fun OmniAgentApp(
                             }
                         }
 
-                        // Droite : Navigation Material 3 semi-transparente avec transitions fluides + Menu
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        // Droite : Icône discrète 'Paramètres' isolant toute la configuration avancée
+                        val isSettingsActive = currentTab != OmniDestination.CONSOLE
+                        val settingsBgColor by animateColorAsState(
+                            targetValue = if (isSettingsActive) {
+                                GoogleBlueContainer.copy(alpha = 0.82f)
+                            } else {
+                                Color(0xFF222734).copy(alpha = 0.55f)
+                            },
+                            animationSpec = tween(220),
+                            label = "settingsIconBg"
+                        )
+                        val settingsBorderColor by animateColorAsState(
+                            targetValue = if (isSettingsActive) {
+                                GoogleBlue.copy(alpha = 0.65f)
+                            } else {
+                                Color.White.copy(alpha = 0.12f)
+                            },
+                            animationSpec = tween(220),
+                            label = "settingsIconBorder"
+                        )
+
+                        Surface(
+                            shape = CircleShape,
+                            color = settingsBgColor,
+                            tonalElevation = if (isSettingsActive) 4.dp else 0.dp,
+                            modifier = Modifier
+                                .size(36.dp)
+                                .border(1.dp, settingsBorderColor, CircleShape)
                         ) {
-                            OmniDestination.entries.forEach { dest ->
-                                val selected = currentTab == dest
-                                val consumerLabel = when (dest) {
-                                    OmniDestination.CONSOLE -> "Assistant"
-                                    OmniDestination.APP_ACCESS -> "Confidentialité"
-                                    OmniDestination.AGENTS_TASKS -> "Espace avancé"
-                                }
-                                val pillBgColor by animateColorAsState(
-                                    targetValue = if (selected) {
-                                        GoogleBlueContainer.copy(alpha = 0.82f)
+                            IconButton(
+                                onClick = {
+                                    currentTab = if (currentTab == OmniDestination.SETTINGS) {
+                                        OmniDestination.CONSOLE
                                     } else {
-                                        Color(0xFF222734).copy(alpha = 0.55f)
-                                    },
-                                    animationSpec = tween(220),
-                                    label = "navPillBg"
-                                )
-                                val pillBorderColor by animateColorAsState(
-                                    targetValue = if (selected) {
-                                        GoogleBlue.copy(alpha = 0.65f)
+                                        OmniDestination.SETTINGS
+                                    }
+                                },
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .testTag("top_bar_settings_button")
+                            ) {
+                                Icon(
+                                    imageVector = if (isSettingsActive) {
+                                        Icons.Filled.Settings
                                     } else {
-                                        Color.White.copy(alpha = 0.10f)
+                                        Icons.Outlined.Settings
                                     },
-                                    animationSpec = tween(220),
-                                    label = "navPillBorder"
+                                    contentDescription = "Paramètres",
+                                    tint = if (isSettingsActive) GoogleBlue else GoogleTextSecondary,
+                                    modifier = Modifier.size(18.dp)
                                 )
-
-                                Surface(
-                                    shape = RoundedCornerShape(50),
-                                    color = pillBgColor,
-                                    tonalElevation = if (selected) 4.dp else 0.dp,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(50))
-                                        .border(1.dp, pillBorderColor, RoundedCornerShape(50))
-                                        .clickable { currentTab = dest }
-                                        .animateContentSize(
-                                            animationSpec = spring(
-                                                dampingRatio = Spring.DampingRatioNoBouncy,
-                                                stiffness = Spring.StiffnessMediumLow
-                                            )
-                                        )
-                                        .testTag("nav_tab_${dest.route}")
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(
-                                            horizontal = if (selected) 12.dp else 9.dp,
-                                            vertical = 7.dp
-                                        ),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(5.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = if (selected) dest.selectedIcon else dest.unselectedIcon,
-                                            contentDescription = consumerLabel,
-                                            tint = if (selected) GoogleBlue else GoogleTextSecondary,
-                                            modifier = Modifier.size(16.dp)
-                                        )
-                                        if (selected) {
-                                            Text(
-                                                text = consumerLabel,
-                                                style = MaterialTheme.typography.labelSmall,
-                                                fontWeight = FontWeight.Bold,
-                                                color = GoogleBlue
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            // Menu d'options & Compte
-                            Box {
-                                Surface(
-                                    shape = CircleShape,
-                                    color = Color(0xFF222734).copy(alpha = 0.65f),
-                                    modifier = Modifier
-                                        .size(34.dp)
-                                        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
-                                ) {
-                                    IconButton(
-                                        onClick = { showMoreMenu = true },
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .testTag("top_bar_more_options_button")
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Default.MoreVert,
-                                            contentDescription = "Paramètres",
-                                            tint = GoogleTextSecondary,
-                                            modifier = Modifier.size(18.dp)
-                                        )
-                                    }
-                                }
-
-                                DropdownMenu(
-                                    expanded = showMoreMenu,
-                                    onDismissRequest = { showMoreMenu = false },
-                                    modifier = Modifier
-                                        .background(Color(0xFF1A1E29).copy(alpha = 0.96f))
-                                        .border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(14.dp))
-                                ) {
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                text = if (currentUser != null) "Compte Google connecté" else "Connecter Google",
-                                                color = GoogleTextPrimary
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(
-                                                imageVector = if (currentUser != null) Icons.Default.CloudDone else Icons.Default.CloudSync,
-                                                contentDescription = null,
-                                                tint = if (currentUser != null) ActionEmerald else GoogleBlue
-                                            )
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            if (currentUser != null) onSignOut() else onOpenAuthScreen()
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = {
-                                            Text(
-                                                text = if (com.example.service.SoniaOverlayBubbleService.canDrawOverlays(context)) {
-                                                    "Bulle flottante (Hors de l'app)"
-                                                } else {
-                                                    "Activer la bulle flottante"
-                                                },
-                                                color = GoogleTextPrimary
-                                            )
-                                        },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.AutoAwesome, contentDescription = null, tint = GoogleBlue)
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            triggerSystemWideBubble()
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Confidentialité & Accès", color = GoogleTextPrimary) },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.Shield, contentDescription = null, tint = ActionEmerald)
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            currentTab = OmniDestination.APP_ACCESS
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Espace avancé & Système", color = GoogleTextPrimary) },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.SmartToy, contentDescription = null, tint = GoogleBlue)
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            currentTab = OmniDestination.AGENTS_TASKS
-                                        }
-                                    )
-                                    DropdownMenuItem(
-                                        text = { Text("Clé API Gemini", color = GoogleTextPrimary) },
-                                        leadingIcon = {
-                                            Icon(Icons.Default.Key, contentDescription = null, tint = GoogleYellow)
-                                        },
-                                        onClick = {
-                                            showMoreMenu = false
-                                            onOpenApiKeyDialog()
-                                        }
-                                    )
-                                }
                             }
                         }
                     }
@@ -582,9 +458,22 @@ fun OmniAgentApp(
                             viewModel = agentViewModel,
                             onOpenAccessPermissions = { agentId ->
                                 agentViewModel.selectPermissionTargetAgent(agentId)
-                                currentTab = OmniDestination.APP_ACCESS
+                                currentTab = OmniDestination.SETTINGS
                             },
                             onOpenGoogleSignIn = onOpenAuthScreen
+                        )
+                        OmniDestination.SETTINGS -> LiaSettingsScreen(
+                            uiState = uiState,
+                            viewModel = agentViewModel,
+                            isUserSignedIn = currentUser != null,
+                            userEmail = currentUser?.email,
+                            onBackToAssistant = { currentTab = OmniDestination.CONSOLE },
+                            onOpenApiKeyDialog = onOpenApiKeyDialog,
+                            onOpenAuthScreen = onOpenAuthScreen,
+                            onSignOut = onSignOut,
+                            onTriggerSystemBubble = triggerSystemWideBubble,
+                            onOpenDetailedAppAccess = { currentTab = OmniDestination.APP_ACCESS },
+                            onOpenAgentFleet = { currentTab = OmniDestination.AGENTS_TASKS }
                         )
                         OmniDestination.APP_ACCESS -> AppAccessControlScreen(
                             uiState = uiState,
