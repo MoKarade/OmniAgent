@@ -432,7 +432,8 @@ object SoniaSecurityKernel {
             "screen_type:",
             "global_action:",
             "ai_prompt:",
-            "ui_macro:"
+            "ui_macro:",
+            "agent_goal:"
         )
         if (safePrefixes.any { lower.startsWith(it) }) {
             return ActionTargetSafetyVerdict.SAFE_APP_LAUNCH

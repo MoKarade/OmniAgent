@@ -159,7 +159,8 @@ class AppActionExecutor : Service() {
             "screen_type:",
             "global_action:",
             "ai_prompt:",
-            "ui_macro:"
+            "ui_macro:",
+            "agent_goal:"
         )
 
         init {
@@ -260,6 +261,18 @@ class AppActionExecutor : Service() {
         ): FastPathDispatchResult? {
             val cleaned = rawUserCommand.trim()
             if (cleaned.isBlank()) return null
+
+            // Ne pas intercepter en simple ouverture Fast-Path une mission d'inspection autonome (ex: "va voir combien de charge j'ai sur ma voiture", "va voir mes jeux dans Steam")
+            val lowerCmd = cleaned.lowercase()
+            if (lowerCmd.contains("va voir") || lowerCmd.contains("aller voir") ||
+                lowerCmd.contains("combien") || lowerCmd.contains("vérifie") ||
+                lowerCmd.contains("verifie") || lowerCmd.contains("ma voiture") ||
+                lowerCmd.contains("steam") || lowerCmd.contains("gemini") ||
+                lowerCmd.contains("chatgpt") || lowerCmd.contains("clique") ||
+                lowerCmd.contains("scrolle")
+            ) {
+                return null
+            }
 
             val startTimeMs = System.currentTimeMillis()
             val taskId = "fp_${startTimeMs}"
@@ -783,6 +796,13 @@ class AppActionExecutor : Service() {
                 )
                 recordExecutionLog(spec, "accessibility:macro:$appTarget", true, executedViaFastPathQueue, safetyValidationSummary)
                 return true
+            }
+
+            if (uriOrPkg.startsWith("agent_goal:")) {
+                val payload = uriOrPkg.removePrefix("agent_goal:")
+                val ok = LiaUniversalGoalAgent.executeAutonomousInspectionMission(context, payload)
+                recordExecutionLog(spec, "agent_goal:inspection", ok, executedViaFastPathQueue, safetyValidationSummary)
+                return ok
             }
 
             return runCatching {

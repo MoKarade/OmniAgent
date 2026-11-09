@@ -135,7 +135,92 @@ class LiaAccessibilityService : AccessibilityService() {
         fun readCurrentScreenSnapshot(): List<String> {
             val svc = instance ?: return emptyList()
             val root = runCatching { svc.rootInActiveWindow }.getOrNull() ?: return emptyList()
-            return collectVisibleTexts(root, maxItems = 40)
+            return collectVisibleTexts(root, maxItems = 50)
+        }
+
+        data class StructuredScreenSnapshot(
+            val activePackageName: String,
+            val allVisibleTexts: List<String>,
+            val clickableButtonsAndTabs: List<String>,
+            val progressAndGaugeValues: List<String>,
+            val keyValuePairs: List<Pair<String, String>>
+        )
+
+        /**
+         * Capture une vue structurée complète de l'écran actif :
+         * - Tous les textes et descriptions d'éléments
+         * - Les barres de progression / jauges graphiques (`rangeInfo` ex: batterie 78%)
+         * - Les paires Clé -> Valeur adjacentes (ex: "Autonomie" -> "342 km", "Batterie" -> "78%")
+         * - La liste des onglets et boutons cliquables pour la navigation autonome
+         */
+        fun readStructuredScreenSnapshot(): StructuredScreenSnapshot {
+            val svc = instance ?: return StructuredScreenSnapshot("", emptyList(), emptyList(), emptyList(), emptyList())
+            val root = runCatching { svc.rootInActiveWindow }.getOrNull()
+                ?: return StructuredScreenSnapshot(status.value.activeWindowPackage, emptyList(), emptyList(), emptyList(), emptyList())
+
+            val pkg = root.packageName?.toString().orEmpty().ifBlank { status.value.activeWindowPackage }
+            val texts = LinkedHashSet<String>()
+            val clickables = LinkedHashSet<String>()
+            val gauges = LinkedHashSet<String>()
+            val pairs = mutableListOf<Pair<String, String>>()
+            var previousLabel = ""
+
+            fun traverse(node: AccessibilityNodeInfo?) {
+                if (node == null || texts.size >= 80) return
+                val t = node.text?.toString()?.trim().orEmpty()
+                val d = node.contentDescription?.toString()?.trim().orEmpty()
+                val combined = when {
+                    t.isNotBlank() && d.isNotBlank() && !t.equals(d, ignoreCase = true) -> "$t ($d)"
+                    t.isNotBlank() -> t
+                    else -> d
+                }
+
+                // Lecture des jauges et ProgressBar (ex: jauge de batterie véhicule ou téléchargement)
+                val range = node.rangeInfo
+                if (range != null && range.max > range.min) {
+                    val pct = (((range.current - range.min) / (range.max - range.min)) * 100f).toInt().coerceIn(0, 100)
+                    val gaugeLabel = if (combined.isNotBlank()) "$combined : $pct%" else "Jauge : $pct%"
+                    gauges.add(gaugeLabel)
+                    texts.add(gaugeLabel)
+                }
+
+                if (combined.length in 1..140) {
+                    texts.add(combined)
+                    if (node.isClickable || node.parent?.isClickable == true) {
+                        clickables.add(t.ifBlank { d })
+                    }
+                    if (previousLabel.isNotBlank() && previousLabel != combined && combined.any { it.isDigit() }) {
+                        pairs.add(previousLabel to combined)
+                    }
+                    previousLabel = combined
+                }
+
+                val count = node.childCount
+                for (i in 0 until count) {
+                    traverse(runCatching { node.getChild(i) }.getOrNull())
+                }
+            }
+
+            traverse(root)
+            return StructuredScreenSnapshot(
+                activePackageName = pkg,
+                allVisibleTexts = texts.toList(),
+                clickableButtonsAndTabs = clickables.toList(),
+                progressAndGaugeValues = gauges.toList(),
+                keyValuePairs = pairs.take(25)
+            )
+        }
+
+        private val CRITICAL_IRREVERSIBLE_KEYWORDS = listOf(
+            "payer maintenant", "confirmer le paiement", "acheter maintenant", "valider le virement",
+            "confirmer le virement", "supprimer le compte", "effacer toutes les données",
+            "déverrouiller les portières", "deverrouiller les portieres", "ouvrir le coffre",
+            "démarrer le moteur", "factory reset"
+        )
+
+        fun isCriticalIrreversibleAction(label: String): Boolean {
+            val lower = label.lowercase().trim()
+            return CRITICAL_IRREVERSIBLE_KEYWORDS.any { lower.contains(it) }
         }
 
         private fun collectVisibleTexts(node: AccessibilityNodeInfo?, maxItems: Int): List<String> {
@@ -163,15 +248,26 @@ class LiaAccessibilityService : AccessibilityService() {
         fun clickNodeByTextOrFallback(
             targetText: String,
             fallbackXRatio: Float = 0.5f,
-            fallbackYRatio: Float = 0.5f
+            fallbackYRatio: Float = 0.5f,
+            allowCriticalIrreversible: Boolean = false
         ): Boolean {
             val svc = instance ?: return false
-            val root = runCatching { svc.rootInActiveWindow }.getOrNull()
             val cleaned = targetText.trim()
+            if (!allowCriticalIrreversible && isCriticalIrreversibleAction(cleaned)) {
+                recordAction("🛡️ Clic critique bloqué en attente de confirmation : « $cleaned »")
+                return false
+            }
+
+            val root = runCatching { svc.rootInActiveWindow }.getOrNull()
 
             if (root != null && cleaned.isNotBlank()) {
                 val matchedNode = findBestMatchingNode(root, cleaned)
                 if (matchedNode != null) {
+                    val nodeText = (matchedNode.text?.toString().orEmpty() + " " + matchedNode.contentDescription?.toString().orEmpty())
+                    if (!allowCriticalIrreversible && isCriticalIrreversibleAction(nodeText)) {
+                        recordAction("🛡️ Noeud critique bloqué (confirmation requise) : « ${nodeText.trim()} »")
+                        return false
+                    }
                     val clicked = performClickOnNodeOrParent(matchedNode)
                     if (clicked) {
                         recordAction("👆 Clic Accessibilité sur « $cleaned »")

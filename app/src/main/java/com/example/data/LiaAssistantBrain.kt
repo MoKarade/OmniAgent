@@ -168,6 +168,13 @@ object LiaAssistantBrain {
             return generalOrPreciseSystemOutcome
         }
 
+        // 4C-0. Agent Cognitif Universel : Inspection autonome d'applications (ex: "combien de charge j'ai sur ma voiture ?", "où en est ma commande ?", "va voir dans [App] ...") + retour automatique dans LIA
+        val universalGoalOutcome = com.example.service.LiaUniversalGoalAgent.checkUniversalGoalOrInspectionIntent(cleaned)
+        if (universalGoalOutcome != null) {
+            appendLiaReplyToStore(universalGoalOutcome, source)
+            return universalGoalOutcome
+        }
+
         // 4C. Navigation autonome multi-étapes dans une application (ex: "retrouve le dernier jeu auquel j'ai joué dans Steam", cliquer là où il faut dans une app)
         val autonomousTaskOutcome = checkAutonomousAppTaskIntent(cleaned)
         if (autonomousTaskOutcome != null) {
@@ -1194,6 +1201,20 @@ object LiaAssistantBrain {
                         isPhoneAction = true,
                         learnedBadge = "🤖 $aiDisplay envoyé"
                     )
+                }
+                if (clarificationType.startsWith("ASK_DOMAIN_APP_CHOICE:")) {
+                    val parts = clarificationType.removePrefix("ASK_DOMAIN_APP_CHOICE:").split(":", limit = 2)
+                    val domainId = parts.getOrNull(0).orEmpty()
+                    val originalGoal = parts.getOrNull(1).orEmpty().ifBlank { cleaned }
+                    val domain = com.example.service.UniversalDomainCategory.entries.firstOrNull { it.id == domainId }
+                    if (domain != null) {
+                        LiaMemoryAndHistoryStore.upsertUserFact(
+                            key = domain.factKeyForPreferredApp,
+                            label = "Application préférée (${domain.titleFr})",
+                            value = cleaned
+                        )
+                    }
+                    return com.example.service.LiaUniversalGoalAgent.checkUniversalGoalOrInspectionIntent(originalGoal)
                 }
                 null
             }
