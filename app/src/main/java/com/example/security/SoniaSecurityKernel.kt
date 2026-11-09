@@ -1,200 +1,20 @@
 package com.example.security
 
-import android.graphics.Bitmap
+import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import com.example.model.GlobalAccessPolicyMode
 import java.security.KeyStore
 import java.security.MessageDigest
+import java.security.SecureRandom
+import java.util.concurrent.atomic.AtomicInteger
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
-import kotlin.math.pow
-
-/**
- * All specialized tools available to Sonia ("Tous les outils imaginables"),
- * each governed by Zero-Trust Scoped Tokens and DLP/Anti-Injection inspection.
- */
-enum class SoniaToolType(
-    val id: String,
-    val emoji: String,
-    val shortLabel: String,
-    val titleFr: String,
-    val description: String,
-    val riskLevel: ToolRiskLevel
-) {
-    CREATE_CHART(
-        id = "tool:create_chart",
-        emoji = "📊",
-        shortLabel = "Graphe",
-        titleFr = "Graphes & Stats",
-        description = "Génère des graphiques interactifs (barres, courbes, anneau)",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    CREATE_CHECKLIST(
-        id = "tool:create_checklist",
-        emoji = "☑️",
-        shortLabel = "Liste",
-        titleFr = "Listes & Checklists",
-        description = "Crée des listes de tâches et checklists interactives cochables",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    GENERATE_IMAGE(
-        id = "tool:generate_image",
-        emoji = "🎨",
-        shortLabel = "Image IA",
-        titleFr = "Studio Image IA",
-        description = "Génère des images via Gemini Nano Banana 2.1",
-        riskLevel = ToolRiskLevel.ELEVATED
-    ),
-    CREATE_TABLE(
-        id = "tool:create_table",
-        emoji = "📋",
-        shortLabel = "Tableau",
-        titleFr = "Tableaux Comparatifs",
-        description = "Construit des tableaux comparatifs et synthèses structurées",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    CREATE_TIMELINE(
-        id = "tool:create_timeline",
-        emoji = "🗓️",
-        shortLabel = "Planning",
-        titleFr = "Planning & Itinéraire",
-        description = "Crée un itinéraire ou une frise chronologique étape par étape",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    CODE_CALCULATOR(
-        id = "tool:code_calculator",
-        emoji = "🧮",
-        shortLabel = "Calcul",
-        titleFr = "Calcul & Sandbox Code",
-        description = "Exécute des calculs financiers, scientifiques et formules",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    VOICE_TTS(
-        id = "tool:voice_tts",
-        emoji = "🔊",
-        shortLabel = "Voix",
-        titleFr = "Synthèse Vocale",
-        description = "Lit les réponses à voix haute via synthèse vocale Android",
-        riskLevel = ToolRiskLevel.SAFE
-    ),
-    PHONE_GUI_OPERATOR(
-        id = "tool:phone_operator",
-        emoji = "📱",
-        shortLabel = "Écran",
-        titleFr = "Contrôle Téléphone",
-        description = "Ouvre, lit et contrôle les applications du téléphone",
-        riskLevel = ToolRiskLevel.ELEVATED
-    ),
-    PERSONAL_VAULT_MCP(
-        id = "tool:personal_vault",
-        emoji = "🔐",
-        shortLabel = "Coffre",
-        titleFr = "Coffre Privé MCP",
-        description = "Consulte vos Contacts, Agenda, SMS et Notes chiffrées",
-        riskLevel = ToolRiskLevel.CRITICAL
-    ),
-    FINANCIAL_GUARD(
-        id = "tool:financial_guard",
-        emoji = "💳",
-        shortLabel = "Paiement",
-        titleFr = "Garde Financière HITL",
-        description = "Prépare des opérations bancaires avec accord humain obligatoire",
-        riskLevel = ToolRiskLevel.CRITICAL
-    )
-}
-
-enum class ToolRiskLevel(val label: String) {
-    SAFE("Standard"),
-    ELEVATED("Surveillé"),
-    CRITICAL("Haute Sécurité (HITL / PIN)")
-}
-
-enum class SoniaChartStyle {
-    BAR,
-    LINE,
-    DONUT
-}
-
-data class SoniaChartPoint(
-    val label: String,
-    val value: Float,
-    val colorHex: Long
-)
-
-data class SoniaChecklistItem(
-    val id: String,
-    val text: String,
-    val isChecked: Boolean = false,
-    val category: String = ""
-)
-
-data class SoniaTimelineStep(
-    val timeLabel: String,
-    val title: String,
-    val detail: String
-)
-
-/**
- * Rich visual artifacts created by Sonia and rendered directly inside the dark chat stream.
- */
-sealed interface SoniaArtifact {
-    val id: String
-    val title: String
-    val createdAt: String
-
-    data class ChartArtifact(
-        override val id: String,
-        override val title: String,
-        val subtitle: String,
-        val style: SoniaChartStyle,
-        val unit: String,
-        val points: List<SoniaChartPoint>,
-        override val createdAt: String
-    ) : SoniaArtifact
-
-    data class ChecklistArtifact(
-        override val id: String,
-        override val title: String,
-        val items: List<SoniaChecklistItem>,
-        override val createdAt: String
-    ) : SoniaArtifact
-
-    data class TableArtifact(
-        override val id: String,
-        override val title: String,
-        val headers: List<String>,
-        val rows: List<List<String>>,
-        override val createdAt: String
-    ) : SoniaArtifact
-
-    data class TimelineArtifact(
-        override val id: String,
-        override val title: String,
-        val steps: List<SoniaTimelineStep>,
-        override val createdAt: String
-    ) : SoniaArtifact
-
-    data class CodeCalcArtifact(
-        override val id: String,
-        override val title: String,
-        val expressionOrCode: String,
-        val evaluatedResult: String,
-        val sha256Signature: String,
-        override val createdAt: String
-    ) : SoniaArtifact
-
-    data class GeneratedImageArtifact(
-        override val id: String,
-        override val title: String,
-        val prompt: String,
-        val bitmap: Bitmap? = null,
-        val isLoading: Boolean = false,
-        val errorMessage: String? = null,
-        override val createdAt: String
-    ) : SoniaArtifact
-}
+import javax.crypto.SecretKeyFactory
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.PBEKeySpec
 
 data class DlpScanResult(
     val isSafe: Boolean,
@@ -213,41 +33,178 @@ data class ChainedSecurityAuditBlock(
     val blockHash: String
 )
 
+enum class ActionTargetSafetyVerdict {
+    SAFE_APP_LAUNCH,
+    REQUIRES_USER_CONFIRMATION,
+    BLOCKED_UNSAFE_TARGET
+}
+
 /**
- * Hardware-backed Android Keystore AES-256-GCM encryption + DLP & Prompt Injection Firewall
- * + Tamper-evident SHA-256 Audit Chain + Instant Intelligent Tool Generators.
+ * Noyau de sécurité Zero-Trust de LIA :
+ * 1. Chiffrement matériel AES-256-GCM via AndroidKeyStore (encrypt + decrypt réels).
+ * 2. Code PIN personnel haché avec PBKDF2WithHmacSHA256 (12 000 itérations + sel aléatoire 16 octets).
+ * 3. Pare-feu DLP anti-injection (FR/EN), masquage IBAN et carte bancaire validée par algorithme de Luhn.
+ * 4. Assainissement des souvenirs RAG externes et validation par liste blanche des cibles [ACTION:...].
+ * 5. Chaîne d'audit SHA-256 à indexation strictement monotone.
  */
 object SoniaSecurityKernel {
 
     private const val ANDROID_KEYSTORE = "AndroidKeyStore"
-    private const val KEY_ALIAS = "sonia_zero_trust_aes256_master_key"
+    private const val KEY_ALIAS = "lia_zero_trust_aes256_master_key"
+    private const val ENCRYPTED_PREFIX = "ENCv1:"
+    private const val GCM_TAG_LENGTH_BITS = 128
+
+    private const val VAULT_PREFS_NAME = "lia_security_vault_prefs"
+    private const val KEY_PIN_SALT = "pin_salt_hex"
+    private const val KEY_PIN_HASH = "pin_hash_hex"
+    private const val KEY_VAULT_LOCKED = "is_vault_locked"
+    private const val KEY_GLOBAL_POLICY = "global_access_policy"
+    private const val PBKDF2_ITERATIONS = 12_000
+    private const val PBKDF2_KEY_BITS = 256
+
+    private val auditBlockCounter = AtomicInteger(0)
+
+    @Volatile
+    var isVaultLockedRuntime: Boolean = false
+        private set
+
+    @Volatile
+    var globalPolicyRuntime: GlobalAccessPolicyMode = GlobalAccessPolicyMode.FULL_AUTONOMOUS_ACCESS
+        private set
 
     private val injectionPatterns = listOf(
-        Regex("ignore\\s+(all\\s+)?previous\\s+instructions", RegexOption.IGNORE_CASE),
+        Regex("ignore\\s+(all\\s+)?(previous|prior|above)\\s+instructions", RegexOption.IGNORE_CASE),
+        Regex("ignore[rz]?\\s+(toutes\\s+)?les\\s+(instructions|consignes)\\s+pr[eé]c[eé]dentes", RegexOption.IGNORE_CASE),
+        Regex("oublie\\s+(toutes\\s+)?tes\\s+(r[eè]gles|instructions|consignes)", RegexOption.IGNORE_CASE),
         Regex("system\\s*override", RegexOption.IGNORE_CASE),
         Regex("virement\\s+imm[eé]diat\\s+vers", RegexOption.IGNORE_CASE),
         Regex("transf[eé]rer\\s+tout\\s+le\\s+solde", RegexOption.IGNORE_CASE),
+        Regex("\\[ACTION\\s*:[^\\]]+\\]", RegexOption.IGNORE_CASE),
         Regex("rm\\s+-rf", RegexOption.IGNORE_CASE),
-        Regex("<script>", RegexOption.IGNORE_CASE)
+        Regex("<script\\b[^>]*>", RegexOption.IGNORE_CASE)
     )
 
+    private val embeddedActionTagRegex = Regex("\\[ACTION\\s*:[^\\]]*\\]", RegexOption.IGNORE_CASE)
     private val ibanRegex = Regex("\\b[A-Z]{2}\\d{2}[A-Z0-9]{11,30}\\b")
-    private val cardRegex = Regex("\\b(?:\\d[ -]*?){13,16}\\b")
+    private val cardCandidateRegex = Regex("\\b(?:\\d[ -]*?){13,19}\\b")
+    private val packageNameRegex = Regex("^[a-zA-Z][a-zA-Z0-9_]*(\\.[a-zA-Z0-9_]+)+$")
+    private val safeAppLabelRegex = Regex("^[\\p{L}0-9 _.-]{1,60}$")
 
-    private val paletteColors = listOf(
-        0xFF8AB4F8L, // Google Blue
-        0xFF81C995L, // Google Green
-        0xFFFDD663L, // Google Amber
-        0xFFF28B82L, // Google Coral
-        0xFFC58AF9L, // Google Purple
-        0xFF78D9ECL  // Google Cyan
-    )
+    fun initVaultState(context: Context) {
+        val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+        val hasPin = !prefs.getString(KEY_PIN_HASH, null).isNullOrBlank()
+        isVaultLockedRuntime = hasPin && prefs.getBoolean(KEY_VAULT_LOCKED, false)
+        val savedPolicy = prefs.getString(KEY_GLOBAL_POLICY, null)
+        globalPolicyRuntime = GlobalAccessPolicyMode.entries.find { it.name == savedPolicy }
+            ?: GlobalAccessPolicyMode.FULL_AUTONOMOUS_ACCESS
+    }
 
+    fun isUserPinConfigured(context: Context): Boolean {
+        val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+        return !prefs.getString(KEY_PIN_HASH, null).isNullOrBlank() &&
+            !prefs.getString(KEY_PIN_SALT, null).isNullOrBlank()
+    }
+
+    fun setOrUpdateUserPin(context: Context, newPin: String): Boolean {
+        val trimmed = newPin.trim()
+        if (trimmed.length < 4 || trimmed.length > 12 || !trimmed.all { it.isDigit() }) {
+            return false
+        }
+        val salt = ByteArray(16).also { SecureRandom().nextBytes(it) }
+        val hashHex = hashPinWithSalt(trimmed, salt)
+        val saltHex = salt.joinToString("") { "%02x".format(it) }
+        context.applicationContext
+            .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_PIN_SALT, saltHex)
+            .putString(KEY_PIN_HASH, hashHex)
+            .putBoolean(KEY_VAULT_LOCKED, false)
+            .apply()
+        isVaultLockedRuntime = false
+        return true
+    }
+
+    fun verifyUserPin(context: Context, candidatePin: String): Boolean {
+        val prefs = context.applicationContext.getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+        val saltHex = prefs.getString(KEY_PIN_SALT, null) ?: return false
+        val expectedHashHex = prefs.getString(KEY_PIN_HASH, null) ?: return false
+        val salt = hexToBytes(saltHex) ?: return false
+        val candidateHashHex = hashPinWithSalt(candidatePin.trim(), salt)
+        val matched = MessageDigest.isEqual(
+            expectedHashHex.toByteArray(Charsets.UTF_8),
+            candidateHashHex.toByteArray(Charsets.UTF_8)
+        )
+        if (matched) {
+            isVaultLockedRuntime = false
+            prefs.edit().putBoolean(KEY_VAULT_LOCKED, false).apply()
+        }
+        return matched
+    }
+
+    fun lockVault(context: Context): Boolean {
+        if (!isUserPinConfigured(context)) return false
+        isVaultLockedRuntime = true
+        context.applicationContext
+            .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_VAULT_LOCKED, true)
+            .apply()
+        return true
+    }
+
+    fun clearUserPin(context: Context) {
+        isVaultLockedRuntime = false
+        context.applicationContext
+            .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .remove(KEY_PIN_SALT)
+            .remove(KEY_PIN_HASH)
+            .putBoolean(KEY_VAULT_LOCKED, false)
+            .apply()
+    }
+
+    fun updateGlobalPolicy(context: Context, mode: GlobalAccessPolicyMode) {
+        globalPolicyRuntime = mode
+        context.applicationContext
+            .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_GLOBAL_POLICY, mode.name)
+            .apply()
+    }
+
+    fun hashPinWithSalt(pin: String, salt: ByteArray): String {
+        return try {
+            val spec = PBEKeySpec(pin.toCharArray(), salt, PBKDF2_ITERATIONS, PBKDF2_KEY_BITS)
+            val factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
+            val bytes = factory.generateSecret(spec).encoded
+            spec.clearPassword()
+            bytes.joinToString("") { "%02x".format(it) }
+        } catch (_: Exception) {
+            val salted = salt + pin.toByteArray(Charsets.UTF_8)
+            val digest = MessageDigest.getInstance("SHA-256").digest(salted)
+            digest.joinToString("") { "%02x".format(it) }
+        }
+    }
+
+    private fun hexToBytes(hex: String): ByteArray? {
+        if (hex.length % 2 != 0) return null
+        return try {
+            ByteArray(hex.length / 2) { i ->
+                hex.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Retourne true uniquement si AndroidKeyStore est réellement opérationnel sur l'appareil.
+     */
     fun isHardwareKeystoreReady(): Boolean {
         return try {
             getOrCreateHardwareAesKey() != null
         } catch (_: Exception) {
-            true
+            false
         }
     }
 
@@ -276,9 +233,15 @@ object SoniaSecurityKernel {
         }
     }
 
-    fun encryptSensitivePayload(plainText: String): String {
+    /**
+     * Chiffre une valeur sensible en AES-256-GCM via AndroidKeyStore.
+     * Retourne null si le Keystore matériel n'est pas disponible (ne retourne jamais un hash irréversible).
+     */
+    fun encryptSensitivePayload(plainText: String): String? {
+        if (plainText.isBlank()) return ""
+        if (plainText.startsWith(ENCRYPTED_PREFIX)) return plainText
         return try {
-            val secretKey = getOrCreateHardwareAesKey() ?: return sha256Hex(plainText)
+            val secretKey = getOrCreateHardwareAesKey() ?: return null
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, secretKey)
             val iv = cipher.iv
@@ -287,10 +250,56 @@ object SoniaSecurityKernel {
             combined[0] = iv.size.toByte()
             System.arraycopy(iv, 0, combined, 1, iv.size)
             System.arraycopy(cipherBytes, 0, combined, 1 + iv.size, cipherBytes.size)
-            Base64.encodeToString(combined, Base64.NO_WRAP)
+            ENCRYPTED_PREFIX + Base64.encodeToString(combined, Base64.NO_WRAP)
         } catch (_: Exception) {
-            "aes256_gcm:${sha256Hex(plainText).take(24)}"
+            null
         }
+    }
+
+    /**
+     * Déchiffre une valeur préalablement chiffrée par [encryptSensitivePayload].
+     * Si la chaîne ne commence pas par `ENCv1:`, elle est retournée telle quelle pour permettre la migration
+     * transparente des anciennes valeurs stockées en clair.
+     */
+    fun decryptSensitivePayload(storedPayload: String): String? {
+        if (storedPayload.isBlank()) return ""
+        if (!storedPayload.startsWith(ENCRYPTED_PREFIX)) return storedPayload
+        return try {
+            val secretKey = getOrCreateHardwareAesKey() ?: return null
+            val encoded = storedPayload.removePrefix(ENCRYPTED_PREFIX)
+            val combined = Base64.decode(encoded, Base64.NO_WRAP)
+            if (combined.size < 2) return null
+            val ivLength = combined[0].toInt() and 0xFF
+            if (ivLength <= 0 || combined.size <= 1 + ivLength) return null
+            val iv = combined.copyOfRange(1, 1 + ivLength)
+            val cipherBytes = combined.copyOfRange(1 + ivLength, combined.size)
+            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(Cipher.DECRYPT_MODE, secretKey, GCMParameterSpec(GCM_TAG_LENGTH_BITS, iv))
+            String(cipher.doFinal(cipherBytes), Charsets.UTF_8)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Vérifie si une séquence de 13 à 19 chiffres correspond à un vrai numéro de carte bancaire selon l'algorithme de Luhn.
+     */
+    fun isValidLuhnCard(rawCandidate: String): Boolean {
+        val digits = rawCandidate.filter { it.isDigit() }
+        if (digits.length !in 13..19) return false
+        if (digits.all { it == digits[0] }) return false
+        var sum = 0
+        var alternate = false
+        for (i in digits.length - 1 downTo 0) {
+            var n = digits[i] - '0'
+            if (alternate) {
+                n *= 2
+                if (n > 9) n -= 9
+            }
+            sum += n
+            alternate = !alternate
+        }
+        return sum % 10 == 0
     }
 
     fun inspectAndSanitize(input: String, maskPii: Boolean = true): DlpScanResult {
@@ -300,7 +309,7 @@ object SoniaSecurityKernel {
         for (pattern in injectionPatterns) {
             if (pattern.containsMatchIn(sanitized)) {
                 threats.add("Injection de prompt neutralisée")
-                sanitized = pattern.replace(sanitized, "[BLOQUÉ PAR PARE-FEU SONIA]")
+                sanitized = pattern.replace(sanitized, "[BLOQUÉ PAR PARE-FEU LIA]")
             }
         }
 
@@ -310,8 +319,14 @@ object SoniaSecurityKernel {
                     "${m.value.take(4)}••••••••${m.value.takeLast(4)}"
                 }
             }
-            if (cardRegex.containsMatchIn(sanitized)) {
-                sanitized = cardRegex.replace(sanitized, "•••• •••• •••• ••••")
+            if (cardCandidateRegex.containsMatchIn(sanitized)) {
+                sanitized = cardCandidateRegex.replace(sanitized) { match ->
+                    if (isValidLuhnCard(match.value)) {
+                        "•••• •••• •••• ${match.value.filter { it.isDigit() }.takeLast(4)}"
+                    } else {
+                        match.value
+                    }
+                }
             }
         }
 
@@ -319,6 +334,85 @@ object SoniaSecurityKernel {
             isSafe = threats.isEmpty(),
             sanitizedText = sanitized,
             detectedThreats = threats
+        )
+    }
+
+    /**
+     * Assainit un souvenir externe (ex: extrait d'e-mail Gmail ou événement Calendar) avant son injection
+     * dans le prompt du LLM pour empêcher toute injection indirecte via `[ACTION:...]`.
+     */
+    fun sanitizeExternalRagContent(rawText: String): String {
+        val withoutActionTags = embeddedActionTagRegex.replace(rawText, "[balise-action-retirée]")
+        return inspectAndSanitize(withoutActionTags, maskPii = false).sanitizedText
+    }
+
+    /**
+     * Valide la cible d'une action système ou d'une balise `[ACTION:cible:libellé]` contre une liste blanche stricte.
+     */
+    fun validateActionTargetSafety(rawTarget: String): ActionTargetSafetyVerdict {
+        val trimmed = rawTarget.trim()
+        if (trimmed.isBlank() || trimmed.length > 240) {
+            return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
+        }
+        if (trimmed.any { it == ';' || it == '|' || it == '`' || it == '\n' || it == '\r' } ||
+            trimmed.contains("&&") || trimmed.contains("$(")
+        ) {
+            return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
+        }
+
+        val lower = trimmed.lowercase()
+        val blockedPrefixes = listOf(
+            "javascript:",
+            "file:",
+            "content:",
+            "intent:",
+            "data:",
+            "vbscript:",
+            "blob:",
+            "market://details?id=com.aistudio"
+        )
+        if (blockedPrefixes.any { lower.startsWith(it) }) {
+            return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
+        }
+
+        val confirmationPrefixes = listOf(
+            "tel:",
+            "smsto:",
+            "sms:",
+            "mailto:",
+            "https://",
+            "http://",
+            "geo:",
+            "google.navigation:"
+        )
+        if (confirmationPrefixes.any { lower.startsWith(it) }) {
+            return ActionTargetSafetyVerdict.REQUIRES_USER_CONFIRMATION
+        }
+
+        if (packageNameRegex.matches(trimmed) || safeAppLabelRegex.matches(trimmed)) {
+            return ActionTargetSafetyVerdict.SAFE_APP_LAUNCH
+        }
+
+        return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
+    }
+
+    fun nextMonotonicAuditBlock(
+        timestampFormatted: String,
+        agentName: String,
+        toolName: String,
+        actionSummary: String,
+        granted: Boolean,
+        previousHash: String
+    ): ChainedSecurityAuditBlock {
+        val idx = auditBlockCounter.incrementAndGet()
+        return createAuditBlock(
+            index = idx,
+            timestampFormatted = timestampFormatted,
+            agentName = agentName,
+            toolName = toolName,
+            actionSummary = actionSummary,
+            granted = granted,
+            previousHash = previousHash
         )
     }
 
@@ -346,184 +440,24 @@ object SoniaSecurityKernel {
     }
 
     fun buildInitialAuditChain(): List<ChainedSecurityAuditBlock> {
-        val b1 = createAuditBlock(
-            index = 1,
+        auditBlockCounter.set(0)
+        val b1 = nextMonotonicAuditBlock(
             timestampFormatted = "Initialisation",
-            agentName = "Noyau Sonia",
+            agentName = "Noyau LIA",
             toolName = "AES-256-GCM",
-            actionSummary = "Clé matérielle AndroidKeyStore initialisée",
+            actionSummary = "Protection AndroidKeyStore & PBKDF2 initialisée",
             granted = true,
             previousHash = "0000000000000000"
         )
-        val b2 = createAuditBlock(
-            index = 2,
+        val b2 = nextMonotonicAuditBlock(
             timestampFormatted = "Initialisation",
             agentName = "Pare-feu DLP",
             toolName = "ANTI-INJECTION",
-            actionSummary = "Protection anti-injection & masquage PII actifs",
+            actionSummary = "Filtrage anti-injection, Luhn & liste blanche d'actions actifs",
             granted = true,
             previousHash = b1.blockHash
         )
         return listOf(b2, b1)
-    }
-
-    fun buildChartFromPrompt(prompt: String, idSuffix: Long, now: String): SoniaArtifact.ChartArtifact {
-        val lower = prompt.lowercase()
-        return when {
-            lower.contains("batterie") || lower.contains("écran") || lower.contains("temps") -> {
-                SoniaArtifact.ChartArtifact(
-                    id = "chart_$idSuffix",
-                    title = "Temps d'écran & Batterie",
-                    subtitle = "Analyse hebdomadaire • Cliquez pour changer de vue",
-                    style = SoniaChartStyle.BAR,
-                    unit = "h",
-                    points = listOf(
-                        SoniaChartPoint("Lun", 3.2f, paletteColors[0]),
-                        SoniaChartPoint("Mar", 2.8f, paletteColors[1]),
-                        SoniaChartPoint("Mer", 4.1f, paletteColors[2]),
-                        SoniaChartPoint("Jeu", 2.5f, paletteColors[1]),
-                        SoniaChartPoint("Ven", 3.6f, paletteColors[4]),
-                        SoniaChartPoint("Sam", 4.5f, paletteColors[3]),
-                        SoniaChartPoint("Dim", 2.1f, paletteColors[5])
-                    ),
-                    createdAt = now
-                )
-            }
-            lower.contains("épargne") || lower.contains("invest") || lower.contains("courbe") -> {
-                SoniaArtifact.ChartArtifact(
-                    id = "chart_$idSuffix",
-                    title = "Croissance & Épargne",
-                    subtitle = "Progression sur 6 mois • Vue interactive",
-                    style = SoniaChartStyle.LINE,
-                    unit = "€",
-                    points = listOf(
-                        SoniaChartPoint("Jan", 1200f, paletteColors[0]),
-                        SoniaChartPoint("Fév", 1550f, paletteColors[1]),
-                        SoniaChartPoint("Mar", 1890f, paletteColors[0]),
-                        SoniaChartPoint("Avr", 2340f, paletteColors[2]),
-                        SoniaChartPoint("Mai", 2780f, paletteColors[4]),
-                        SoniaChartPoint("Juin", 3420f, paletteColors[1])
-                    ),
-                    createdAt = now
-                )
-            }
-            else -> {
-                SoniaArtifact.ChartArtifact(
-                    id = "chart_$idSuffix",
-                    title = "Répartition du Budget Mensuel",
-                    subtitle = "Synthèse financière sécurisée • Barres / Courbe / Anneau",
-                    style = SoniaChartStyle.BAR,
-                    unit = "€",
-                    points = listOf(
-                        SoniaChartPoint("Logement", 850f, paletteColors[0]),
-                        SoniaChartPoint("Courses", 420f, paletteColors[1]),
-                        SoniaChartPoint("Épargne", 550f, paletteColors[4]),
-                        SoniaChartPoint("Transport", 160f, paletteColors[2]),
-                        SoniaChartPoint("Loisirs", 240f, paletteColors[3])
-                    ),
-                    createdAt = now
-                )
-            }
-        }
-    }
-
-    fun buildChecklistFromPrompt(prompt: String, idSuffix: Long, now: String): SoniaArtifact.ChecklistArtifact {
-        val lower = prompt.lowercase()
-        val (title, items) = when {
-            lower.contains("course") || lower.contains("achat") -> {
-                "Liste de Courses Intelligente" to listOf(
-                    SoniaChecklistItem("c1", "Fruits & légumes frais bio", true, "Primeur"),
-                    SoniaChecklistItem("c2", "Café en grains & lait d'avoine", false, "Épicerie"),
-                    SoniaChecklistItem("c3", "Filets de saumon & huile d'olive", false, "Frais"),
-                    SoniaChecklistItem("c4", "Amandes & chocolat noir 85%", false, "Snack"),
-                    SoniaChecklistItem("c5", "Lessive écologique", false, "Maison")
-                )
-            }
-            lower.contains("voyage") || lower.contains("valise") -> {
-                "Checklist Départ & Voyage" to listOf(
-                    SoniaChecklistItem("v1", "Passeport, billets & carte bancaire", true, "Documents"),
-                    SoniaChecklistItem("v2", "Chargeur rapide & batterie externe", true, "Tech"),
-                    SoniaChecklistItem("v3", "Activer le VPN Corpus-Zero en itinérance", false, "Sécurité"),
-                    SoniaChecklistItem("v4", "Trousse de toilette cabine (<100ml)", false, "Bagage")
-                )
-            }
-            else -> {
-                "Liste de Tâches LIA" to listOf(
-                    SoniaChecklistItem("t1", "Ajouter mes contacts dans la mémoire LIA", false, "Contacts"),
-                    SoniaChecklistItem("t2", "Enregistrer mes souvenirs importants", false, "Mémoire"),
-                    SoniaChecklistItem("t3", "Tester les actions rapides apprises", false, "Apps"),
-                    SoniaChecklistItem("t4", "Vérifier les autorisations de sécurité", true, "Sécurité")
-                )
-            }
-        }
-        return SoniaArtifact.ChecklistArtifact(
-            id = "list_$idSuffix",
-            title = title,
-            items = items,
-            createdAt = now
-        )
-    }
-
-    fun buildTableFromPrompt(prompt: String, idSuffix: Long, now: String): SoniaArtifact.TableArtifact {
-        return SoniaArtifact.TableArtifact(
-            id = "table_$idSuffix",
-            title = "Comparatif & Audit de Performance LIA",
-            headers = listOf("Critère", "LIA Fast", "Cloud Pro", "Sécurité"),
-            rows = listOf(
-                listOf("Vitesse", "0.4 s", "1.6 s", "AES-256"),
-                listOf("Graphes & UI", "Interactif", "Complet", "Signé SHA"),
-                listOf("Vie Privée", "Locale Room", "Chiffré", "DLP Actif"),
-                listOf("Validation", "Safe Contact", "HITL", "Zero-Trust")
-            ),
-            createdAt = now
-        )
-    }
-
-    fun buildTimelineFromPrompt(prompt: String, idSuffix: Long, now: String): SoniaArtifact.TimelineArtifact {
-        return SoniaArtifact.TimelineArtifact(
-            id = "timeline_$idSuffix",
-            title = "Planning de la Journée",
-            steps = listOf(
-                SoniaTimelineStep("09:00", "Organisation de la journée", "Consultation des priorités et rappels"),
-                SoniaTimelineStep("12:30", "Pause déjeuner", "Moment de détente"),
-                SoniaTimelineStep("14:30", "Session de travail / Études", "Concentration sans interruption"),
-                SoniaTimelineStep("18:00", "Bilan de fin de journée", "Mise à jour des notes et objectifs")
-            ),
-            createdAt = now
-        )
-    }
-
-    fun buildCodeCalcFromPrompt(prompt: String, idSuffix: Long, now: String): SoniaArtifact.CodeCalcArtifact {
-        val numbers = Regex("\\d+(?:[.,]\\d+)?").findAll(prompt)
-            .mapNotNull { it.value.replace(',', '.').toDoubleOrNull() }
-            .toList()
-
-        val (expr, result) = if (numbers.size >= 2) {
-            val a = numbers[0]
-            val b = numbers[1]
-            val sum = a + b
-            val prod = a * b
-            "val a = $a\nval b = $b\nval somme = a + b // $sum\nval produit = a * b // $prod" to
-                "Somme = ${"%.2f".format(sum)} • Produit = ${"%.2f".format(prod)}"
-        } else {
-            // Financial compound interest & monthly budget simulation
-            val capital = 10000.0
-            val rate = 0.045
-            val years = 5
-            val finalAmount = capital * (1.0 + rate).pow(years)
-            "val capital = 10_000.0 €\nval tauxAnnuel = 4.5%\nval duree = 5 ans\nval total = capital * (1 + 0.045)^5" to
-                "${"%.2f".format(finalAmount)} € (+${"%.2f".format(finalAmount - capital)} €)"
-        }
-
-        val sig = sha256Hex("$expr|$result|$idSuffix")
-        return SoniaArtifact.CodeCalcArtifact(
-            id = "calc_$idSuffix",
-            title = "Calculateur Financier & Code",
-            expressionOrCode = expr,
-            evaluatedResult = result,
-            sha256Signature = sig,
-            createdAt = now
-        )
     }
 
     fun sha256Hex(input: String): String {

@@ -16,15 +16,17 @@ enum class OperationType {
 fun handleFirestoreError(
     error: Throwable,
     operationType: OperationType,
-    path: String?
+    path: String?,
+    rethrow: Boolean = true
 ) {
-    // Never log or wrap coroutine cancellations as Firestore errors
     if (error is CancellationException) {
         throw error
     }
 
-    val auth = FirebaseAuth.getInstance()
-    val currentUser = auth.currentUser
+    val currentUser = runCatching { FirebaseAuth.getInstance().currentUser }.getOrNull()
+    val maskedUid = currentUser?.uid?.let { uid ->
+        if (uid.length > 6) "${uid.take(3)}***${uid.takeLast(3)}" else "***"
+    }.orEmpty()
 
     val errorInfo = buildString {
         append("{")
@@ -32,8 +34,7 @@ fun handleFirestoreError(
         append("\"operationType\": \"${operationType.name}\", ")
         append("\"path\": \"${path ?: ""}\", ")
         append("\"authInfo\": {")
-        append("\"userId\": \"${currentUser?.uid ?: ""}\", ")
-        append("\"email\": \"${currentUser?.email ?: ""}\", ")
+        append("\"userId\": \"$maskedUid\", ")
         append("\"emailVerified\": ${currentUser?.isEmailVerified ?: false}, ")
         append("\"isAnonymous\": ${currentUser?.isAnonymous ?: false}")
         append("}")
@@ -41,5 +42,7 @@ fun handleFirestoreError(
     }
 
     Log.e("FirestoreError", errorInfo, error)
-    throw RuntimeException(errorInfo, error)
+    if (rethrow) {
+        throw RuntimeException(errorInfo, error)
+    }
 }

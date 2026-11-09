@@ -69,6 +69,7 @@ import com.example.ui.theme.SecurityCrimson
 import com.example.ui.theme.TextSecondary
 import com.example.ui.theme.ThoughtAmber
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 
 @Composable
 fun AuthScreen(
@@ -312,6 +313,37 @@ fun AuthScreen(
                                 fontWeight = FontWeight.Bold
                             )
                         }
+                    }
+
+                    // Direct Fast Firebase Sign-In Button (Immediate Cloud Connection)
+                    Button(
+                        onClick = {
+                            coroutineScope.launch {
+                                runCatching {
+                                    com.google.firebase.auth.FirebaseAuth.getInstance().signInAnonymously().await()
+                                    onSignInSuccess()
+                                }
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = ActionEmerald,
+                            contentColor = Color(0xFF001F24)
+                        ),
+                        contentPadding = PaddingValues(vertical = 12.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("firebase_fast_connect_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.CloudDone,
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "Connexion Directe Firebase (Session Cloud Immédiate)",
+                            fontWeight = FontWeight.Bold
+                        )
                     }
 
                     // Sync Android Calendar & Contacts + Cloud Workspace Button

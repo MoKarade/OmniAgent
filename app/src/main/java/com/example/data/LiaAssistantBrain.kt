@@ -1,6 +1,9 @@
 package com.example.data
 
 import com.example.model.currentTimeFormatted
+import com.example.security.ActionTargetSafetyVerdict
+import com.example.security.SoniaSecurityKernel
+import com.example.service.LiaMcpConnectorRegistry
 import com.google.firebase.Firebase
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.content
@@ -275,160 +278,14 @@ object LiaAssistantBrain {
         return outcome
     }
 
-    /**
-     * Moteur d'Apprentissage Actif & Règles Personnalisées :
-     * 1. Permet d'enseigner à LIA des règles d'action ("Apprends que quand je dis [X] fais [Y]", "Quand je dis [X] ouvre [Y]", "Associe [X] à [Y]").
-     * 2. Permet d'enseigner n'importe quel fait ou préférence ("Apprends que [X]", "Retiens que [X]", "Souviens-toi que [X]", "Mémorise que [X]").
-     * 3. Exécute immédiatement toute règle personnalisée apprise lorsque l'utilisateur prononce son déclencheur.
-     */
     private fun checkCustomLearningAndRuleIntent(input: String): LiaBrainTurnOutcome? {
-        val trimmed = input.trim()
-        val lower = trimmed.lowercase()
-        val snap = LiaMemoryAndHistoryStore.state.value
-
-        // A. Demande générale d'apprentissage ("Apprendre une règle", "Apprends quelque chose", "Comment t'apprendre")
-        if (lower == "apprendre une règle" ||
-            lower == "apprendre une regle" ||
-            lower == "apprends une règle" ||
-            lower == "apprends quelque chose" ||
-            lower == "mode apprentissage"
-        ) {
-            return LiaBrainTurnOutcome(
-                replyText = "🧠 **Apprentissage LIA actif (Capacité illimitée Room + RL Q-Learning)** :\n\n" +
-                    "• **M'enseigner un raccourci / une règle** : dites *« Quand je dis [mot-clé], fais [action] »* (ex: *« Quand je dis pause café, ouvre YouTube »* ou *« Quand je dis coucou maman, ouvre une conversation avec Maman sur Messenger »*).\n" +
-                    "• **M'enseigner un fait ou souvenir** : dites *« Retiens que mon pseudo Discord est Alex99 »* ou *« Apprends que mon plat préféré est les sushis »*.\n" +
-                    "• **Apprentissage continu automatique** : chaque action que vous me demandez renforce son score Q-Value (${snap.learnedShortcuts.size} raccourcis appris • ${snap.souvenirs.size} souvenirs RAG).",
-                learnedBadge = "🧠 Capacité : ${snap.souvenirs.size} souvenirs • ${snap.learnedShortcuts.size} règles RL",
-                quickReplies = listOf(
-                    "Quand je dis pause café, ouvre YouTube",
-                    "Quand je dis message maman, ouvre une conversation avec Maman sur Messenger",
-                    "Retiens que mon jeu préféré est Elden Ring",
-                    "Qu'as-tu appris ?"
-                )
-            )
-        }
-
-        // B. Enseignement d'une règle personnalisée : "Apprends que quand je dis X fais/ouvre/lance Y" ou "Quand je dis X, fais Y" ou "Associe X à Y"
-        val customRuleRegex = Regex(
-            "^(?:apprends(?:\\s+que)?\\s+|retiens(?:\\s+que)?\\s+)?(?:quand\\s+je\\s+(?:dis|demande|tape)|si\\s+je\\s+dis)\\s+[«\"]?(.+?)[»\"]?\\s*(?:,|alors|->|=|\\s+(?=fais|ouvre|lance|envoie|appelle|mets|va|écris|ecris|clique|scrolle))\\s*(?:fais\\s+|exécute\\s+|execute\\s+)?[«\"]?(.+?)[»\"]?$",
-            RegexOption.IGNORE_CASE
-        )
-        val associeRegex = Regex(
-            "^(?:associe|relie|apprends\\s+la\\s+r[èe]gle)\\s+[«\"]?(.+?)[»\"]?\\s+(?:à|a|avec|->|=)\\s+[«\"]?(.+?)[»\"]?$",
-            RegexOption.IGNORE_CASE
-        )
-        val ruleMatch = customRuleRegex.find(trimmed) ?: associeRegex.find(trimmed)
-        if (ruleMatch != null) {
-            val trigger = ruleMatch.groupValues[1].trim().removeSurrounding("\"").removeSurrounding("«", "»").trim()
-            val targetCommand = ruleMatch.groupValues[2].trim().removeSurrounding("\"").removeSurrounding("«", "»").trim()
-            if (trigger.length >= 2 && targetCommand.length >= 2) {
-                val ruleKey = "custom_rule_${trigger.lowercase().replace(Regex("[^a-z0-9à-ÿ]"), "_")}"
-                LiaMemoryAndHistoryStore.upsertSouvenir(
-                    type = "PREFERENCE",
-                    subjectKey = ruleKey,
-                    title = "Règle apprise : « $trigger »",
-                    detailValue = "Exécuter : $targetCommand",
-                    searchTags = "regle,raccourci,macro,${trigger.lowercase()},${targetCommand.lowercase()}",
-                    importanceScore = 1.2f
-                )
-                LiaMemoryAndHistoryStore.upsertLongTermMemory(
-                    category = "CUSTOM_RULE",
-                    memoryKey = ruleKey,
-                    title = trigger,
-                    contentValue = targetCommand,
-                    targetActionOrPackage = "rule:$targetCommand",
-                    speedupMs = 20L
-                )
-                LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                    triggerPhrase = trigger,
-                    actionTitle = "Règle : $targetCommand",
-                    targetPackageOrScreen = "rule:$targetCommand",
-                    stepsSaved = 5,
-                    latencyMs = 25L,
-                    rewardSignal = 1.35f
-                )
-                return LiaBrainTurnOutcome(
-                    replyText = "🧠 **Nouvelle règle apprise et mémorisée dans Room & RL** :\n\n" +
-                        "• **Déclencheur** : *« $trigger »*\n" +
-                        "• **Action associée** : **« $targetCommand »**\n\n" +
-                        "Dites simplement *« $trigger »* (ou touchez le bouton ci-dessous) pour que je l'exécute immédiatement !",
-                    learnedBadge = "🧠 Règle apprise : « $trigger »",
-                    quickReplies = listOf(trigger, "Qu'as-tu appris ?")
-                )
-            }
-        }
-
-        // C. Enseignement explicite universel ("Apprends que ...", "Retiens que ...", "Souviens-toi que ...", "Mémorise que ...", "Sache que ...")
-        val explicitFactRegex = Regex(
-            "^(?:apprends\\s+que|retiens\\s+que|souviens(?:-toi)?\\s+que|m[ée]morise\\s+que|enregistre\\s+que|sache\\s+que|note\\s+que)\\s+(.+)$",
-            RegexOption.IGNORE_CASE
-        )
-        explicitFactRegex.find(trimmed)?.let { m ->
-            val rawFact = m.groupValues[1].trim().removeSuffix(".")
-            if (rawFact.length >= 3) {
-                val subParts = Regex("^(.+?)\\s+(?:est|sont|c'est|vaut|=)\\s+(.+)$", RegexOption.IGNORE_CASE).find(rawFact)
-                val (factTitle, factVal, factKey) = if (subParts != null) {
-                    val subject = subParts.groupValues[1].trim().replaceFirstChar { it.uppercase() }
-                    val value = subParts.groupValues[2].trim()
-                    val key = subject.lowercase().replace(Regex("[^a-z0-9à-ÿ]"), "_").take(28)
-                    Triple(subject, value, key)
-                } else {
-                    val shortTitle = rawFact.take(38)
-                    val key = "souvenir_${System.currentTimeMillis() % 100000}"
-                    Triple("Souvenir : $shortTitle", rawFact, key)
-                }
-
-                LiaMemoryAndHistoryStore.upsertUserFact(factKey, factTitle, factVal)
-                LiaMemoryAndHistoryStore.upsertSouvenir(
-                    type = "FAIT",
-                    subjectKey = factKey,
-                    title = factTitle,
-                    detailValue = factVal,
-                    searchTags = "appris,retenu,${rawFact.lowercase().replace(Regex("[^a-z0-9à-ÿ ]"), " ")}",
-                    importanceScore = 1.15f
-                )
-                return LiaBrainTurnOutcome(
-                    replyText = "🧠 **C'est appris et indexé dans ma mémoire RAG** :\n\n" +
-                        "• **$factTitle** : **$factVal**\n\n" +
-                        "Je m'en servirai automatiquement dans nos prochaines conversations et actions.",
-                    learnedBadge = "🧠 Appris : $factTitle = $factVal"
-                )
-            }
-        }
-
-        // D. Vérifie si la phrase de l'utilisateur correspond à une Règle Personnalisée ("CUSTOM_RULE") déjà apprise !
-        val matchedCustomRule = snap.longTermMemories.firstOrNull {
-            it.category == "CUSTOM_RULE" && (
-                it.title.equals(trimmed, ignoreCase = true) ||
-                    lower == "exécute ${it.title.lowercase()}" ||
-                    lower == "lance ${it.title.lowercase()}"
-                )
-        }
-        if (matchedCustomRule != null) {
-            val targetCmd = matchedCustomRule.contentValue
-            LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                triggerPhrase = matchedCustomRule.title,
-                actionTitle = "Règle exécutée : $targetCmd",
-                targetPackageOrScreen = "rule:$targetCmd",
-                stepsSaved = 5,
-                latencyMs = 20L,
-                rewardSignal = 1.4f
-            )
-            // Exécute la commande cible apprise (Messenger, App, Écran, Réglage, etc.)
-            val delegated = checkScreenControlAndGestureIntent(targetCmd)
+        return LiaFactAndRuleExtractor.checkCustomLearningAndRuleIntent(input) { targetCmd ->
+            checkScreenControlAndGestureIntent(targetCmd)
                 ?: checkCrossAppMessagingAndLookupIntent(targetCmd)
                 ?: checkAutonomousAppTaskIntent(targetCmd)
                 ?: checkGeneralAndPreciseSystemActionsIntent(targetCmd)
                 ?: checkFastAppLaunchIntent(targetCmd)
-            if (delegated != null) {
-                return delegated.copy(
-                    replyText = "🧠 **Règle apprise activée (« ${matchedCustomRule.title} » ➔ « $targetCmd »)** :\n\n${delegated.replyText}",
-                    learnedBadge = "🧠 Règle RL exécutée : ${matchedCustomRule.title}"
-                )
-            }
         }
-
-        return null
     }
 
     /**
@@ -612,70 +469,8 @@ object LiaAssistantBrain {
         return null
     }
 
-    /**
-     * Enregistre instantanément une note dictée au microphone (`SpeechRecognizer`) ou écrite
-     * dans la base Room (`lia_souvenirs` + `LongTermMemory`), ou demande le contenu si l'utilisateur
-     * lance l'action générale « Prendre une note ».
-     */
-    private fun checkVoiceNoteOrQuickNoteIntent(input: String): LiaBrainTurnOutcome? {
-        val trimmed = input.trim()
-        val lower = trimmed.lowercase()
-
-        // Action générale : "Prendre une note", "Nouvelle note", "Note vocale", "Prends une note"
-        if (lower == "prendre une note" ||
-            lower == "prends une note" ||
-            lower == "nouvelle note" ||
-            lower == "note vocale" ||
-            lower == "ajouter une note" ||
-            lower == "créer une note" ||
-            lower == "creer une note" ||
-            lower == "enregistrer une note"
-        ) {
-            val key = "note_${System.currentTimeMillis()}"
-            LiaMemoryAndHistoryStore.setPendingFollowUp(
-                LiaPendingFollowUp.WaitingForUserFact(key, "Note personnelle")
-            )
-            return LiaBrainTurnOutcome(
-                replyText = "📝 **Prise de note prête** : Écrivez ou dictez au micro ce que vous souhaitez noter, et je l'enregistrerai immédiatement.",
-                learnedBadge = "📝 En attente de votre note"
-            )
-        }
-
-        val noteRegex = Regex(
-            pattern = "^(?:note\\s+vocale|prends?\\s+en\\s+note|prendre\\s+une\\s+note|enregistre\\s+la\\s+note|m[ée]morise\\s+la\\s+note|note)\\s*[:\\-]?\\s+(.+)$",
-            option = RegexOption.IGNORE_CASE
-        )
-        val match = noteRegex.find(trimmed) ?: return null
-        val noteContent = match.groupValues[1].trim()
-        if (noteContent.length < 2) return null
-
-        val now = currentTimeFormatted()
-        val shortTitle = noteContent.take(42).let { if (noteContent.length > 42) "$it…" else it }
-        val key = "note_${System.currentTimeMillis()}"
-
-        LiaMemoryAndHistoryStore.upsertSouvenir(
-            type = "NOTE",
-            subjectKey = key,
-            title = "Note : $shortTitle",
-            detailValue = "$noteContent (enregistrée à $now)",
-            searchTags = "note,vocale,memo,rappel,${noteContent.lowercase().replace(Regex("[^a-zà-ÿ0-9 ]"), " ")}"
-        )
-        LiaMemoryAndHistoryStore.upsertLongTermMemory(
-            category = "VOICE_NOTE",
-            memoryKey = key,
-            title = "📝 $shortTitle",
-            contentValue = noteContent,
-            targetActionOrPackage = "note_saved",
-            speedupMs = 25L
-        )
-
-        return LiaBrainTurnOutcome(
-            replyText = "📝 **Note enregistrée** :\n\n" +
-                "« *$noteContent* »\n\n" +
-                "Vous pouvez me la redemander à tout moment.",
-            learnedBadge = "📝 Note mémorisée"
-        )
-    }
+    private fun checkVoiceNoteOrQuickNoteIntent(input: String): LiaBrainTurnOutcome? =
+        LiaLocalUtilitiesEngine.checkVoiceNoteOrQuickNoteIntent(input)
 
     /**
      * Interroge ou synchronise les APIs Google Cloud Workspace (Gmail, Google Calendar, Google Drive, Google Contacts)
@@ -757,107 +552,8 @@ object LiaAssistantBrain {
         return null
     }
 
-    /**
-     * Exécute les Macros & Routines Multi-Actions en 1 Clic (« Mode Matin », « Mode Départ / Trajet », « Mode Soir »)
-     * combinant le moteur RAG Room (`lia_souvenirs`), le Safe Contact Resolver et les habitudes RL (`lia_app_usage_frequency`).
-     */
-    private fun checkMacroRoutineIntent(input: String): LiaBrainTurnOutcome? {
-        val lower = input.lowercase().trim()
-        val snap = LiaMemoryAndHistoryStore.state.value
-
-        return when {
-            lower.contains("mode matin") || lower.contains("routine matin") -> {
-                val events = snap.souvenirs.filter { it.type == "EVENEMENT" }
-                val morningApp = snap.appUsageHabits.maxByOrNull { it.morningCount * 2 + it.launchCount }
-                val appTarget = if (morningApp != null) {
-                    LiaAppLaunchAction(morningApp.appLabel, morningApp.packageName, "home_launcher", 55L)
-                } else {
-                    LiaAppLaunchAction("Gmail", "com.google.android.gm", "home_launcher", 55L)
-                }
-                val eventsText = if (events.isEmpty()) {
-                    "• Aucun événement particulier prévu pour aujourd'hui."
-                } else {
-                    events.take(3).joinToString("\n") { "• 📅 **${it.title}** : ${it.detailValue}" }
-                }
-                LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                    triggerPhrase = "☀️ Mode Matin",
-                    actionTitle = "Routine Matin (Agenda + ${appTarget.appLabel})",
-                    targetPackageOrScreen = appTarget.packageName,
-                    stepsSaved = 4,
-                    latencyMs = 55L
-                )
-                LiaBrainTurnOutcome(
-                    replyText = "☀️ **Routine du matin prête** :\n\n" +
-                        "**1. Votre agenda** :\n$eventsText\n\n" +
-                        "**2. Votre application habituelle** :\nPrêt à ouvrir **${appTarget.appLabel}** ci-dessous.",
-                    appLaunchAction = appTarget,
-                    isPhoneAction = true,
-                    learnedBadge = "☀️ Mode Matin"
-                )
-            }
-
-            lower.contains("mode départ") || lower.contains("mode depart") || lower.contains("mode trajet") || lower.contains("routine départ") -> {
-                val firstContact = snap.userFacts.firstOrNull { it.key.endsWith("_tel") }
-                val targetName = firstContact?.label?.removePrefix("Numéro ")?.trim()?.ifBlank { "Maman" } ?: "Maman"
-                val verification = LiaMemoryAndHistoryStore.verifyContactForSms(targetName)
-                val body = "Je viens de partir, j'arrive dans environ 15 minutes !"
-                val navApp = LiaAppLaunchAction("Google Maps", "com.google.android.apps.maps", "home_launcher", 55L)
-
-                LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                    triggerPhrase = "🚗 Mode Départ",
-                    actionTitle = "Routine Départ (SMS $targetName + Navigation)",
-                    targetPackageOrScreen = "messages_inbox",
-                    stepsSaved = 5,
-                    latencyMs = 60L
-                )
-                LiaBrainTurnOutcome(
-                    replyText = "🚗 **Mode Départ prêt** :\n\n" +
-                        "• Message préparé pour **${verification.recipientName}** (${verification.phoneNumber.ifBlank { "numéro à vérifier" }}).\n" +
-                        "• Accès direct à la navigation ci-dessous.",
-                    smsDraft = LiaSmsDraft(
-                        recipientName = verification.recipientName,
-                        phoneNumber = verification.phoneNumber,
-                        messageBody = body,
-                        isSent = false,
-                        isContactVerified = verification.isVerified,
-                        contactVerificationStatus = verification.statusLabel,
-                        fuzzyMatchScore = verification.fuzzyMatchScore
-                    ),
-                    appLaunchAction = navApp,
-                    isPhoneAction = true,
-                    targetVirtualScreenId = "messages_inbox",
-                    learnedBadge = "🚗 Mode Départ"
-                )
-            }
-
-            lower.contains("mode soir") || lower.contains("routine soir") -> {
-                val eveningApp = snap.appUsageHabits.maxByOrNull { it.eveningCount * 2 + it.launchCount }
-                val appTarget = if (eveningApp != null) {
-                    LiaAppLaunchAction(eveningApp.appLabel, eveningApp.packageName, "home_launcher", 55L)
-                } else {
-                    LiaAppLaunchAction("YouTube", "com.google.android.youtube", "home_launcher", 55L)
-                }
-                val learnedTodayCount = snap.souvenirs.size
-                LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                    triggerPhrase = "🌙 Mode Soir",
-                    actionTitle = "Routine Soir (${appTarget.appLabel})",
-                    targetPackageOrScreen = appTarget.packageName,
-                    stepsSaved = 4,
-                    latencyMs = 55L
-                )
-                LiaBrainTurnOutcome(
-                    replyText = "🌙 **Mode Soir prêt** :\n\n" +
-                        "• **$learnedTodayCount souvenir(s)** et **${snap.learnedShortcuts.size} raccourci(s)** mémorisés.\n" +
-                        "• Votre application du soir (**${appTarget.appLabel}**) est prête ci-dessous.",
-                    appLaunchAction = appTarget,
-                    isPhoneAction = true,
-                    learnedBadge = "🌙 Mode Soir"
-                )
-            }
-
-            else -> null
-        }
-    }
+    private fun checkMacroRoutineIntent(input: String): LiaBrainTurnOutcome? =
+        LiaLocalUtilitiesEngine.checkMacroRoutineIntent(input)
 
     private fun appendLiaReplyToStore(outcome: LiaBrainTurnOutcome, source: String) {
         val liaMsg = LiaChatMessage(
@@ -2062,37 +1758,23 @@ object LiaAssistantBrain {
             )
         }
 
-        // Asking about LIA's Neuro-Symbolic Architecture (10-section engineering specification)
+        // Asking about LIA's System Architecture
         if (lower.contains("architecture") ||
-            lower.contains("neuro-symbolique") ||
-            lower.contains("neuro symbolique") ||
-            lower.contains("appfunction") ||
-            lower.contains("omniparser") ||
-            lower.contains("ferret") ||
-            lower.contains("memgpt") ||
-            lower.contains("mem0") ||
-            lower.contains("bitnet") ||
-            lower.contains("awq") ||
-            lower.contains("moshi") ||
-            lower.contains("mimi") ||
-            lower.contains("trifecta") ||
-            lower.contains("mobileinject") ||
-            lower.contains("tri-agent") ||
-            lower.contains("reflector")
+            lower.contains("comment tu fonctionnes") ||
+            lower.contains("ton fonctionnement") ||
+            lower.contains("système interne") ||
+            lower.contains("systeme interne")
         ) {
-            val arch = com.example.architecture.LiaNeuroSymbolicEngine.state.value
-            val memGpt = com.example.architecture.LiaNeuroSymbolicEngine.computeLiveMemGptStats()
-            val tripletsCount = com.example.architecture.LiaNeuroSymbolicEngine.buildLiveMem0Triplets().size
+            val souvenirsCount = snap.souvenirs.size
+            val factsCount = snap.userFacts.size
+            val auditBlocks = com.example.security.SoniaSecurityKernel.auditBlockchain.value.size
             return LiaBrainTurnOutcome(
-                replyText = "Voici mon **Architecture Système Neuro-Symbolique Hybride** active :\n\n" +
-                    "1. **Double Voie d'Exécution** : Voie Symbolique Directe (`@AppFunction` & `Android MCP / AppSearch` en < 8 ms) + Voie Visuelle Réflexive (`AccessibilityService.dispatchGesture`).\n" +
-                    "2. **Vision Multi-Résolution & Set-of-Mark** : Partitionnement `Ferret-UI` (`1080×2400` en 2 tuiles HD + vue globale), détection `OmniParser v2` (`YOLOv8 + Florence-2`) et `Visual Test-Time Scaling` (2 captures @ 100 ms).\n" +
-                    "3. **Topologie Tri-Agent & Réflexion MobileUse** : Découplage strict **Manager (Alpha)**, **Operator (Beta)** et **Reflector (Gamma)** avec réflexion à 3 échelles (*Action / Trajectory / Global*).\n" +
-                    "4. **Mémoire MemGPT & Graphe Mem0** : Contexte actif RAM (${memGpt.activeRamTokensUsed}/${memGpt.activeRamTokenLimit} tokens), graphe d'entités `Mem0` ($tripletsCount triplets actifs) et Auto-Évolution `Tips & Shortcuts`.\n" +
-                    "5. **Accélération NPU & Audio Full-Duplex** : Mode `${arch.npuTelemetry.activeQuantization.label}` (${arch.npuTelemetry.activeQuantization.decodeSpeedTokensPerSec} tok/s • ${arch.npuTelemetry.activeQuantization.thermalWatts} W), cache KV `mzCache`, et pipeline vocal `Moshi + Codec Mimi` (${arch.moshiVoiceState.totalTheoreticalLatencyMs} ms < 200 ms).\n" +
-                    "6. **Sécurité Critique & DMA** : Neutralisation du *Lethal Trifecta*, *Visual Sanitization* anti-MobileInject, garde-fou HITL et 11 hooks système DMA.\n\n" +
-                    "👉 Ouvrez le menu **＋ ➔ Système avancé** pour inspecter chaque module.",
-                learnedBadge = "🧬 Système avancé"
+                replyText = "Voici mon **Architecture Système LIA (Zero-Trust & Gemini 2026)** active :\n\n" +
+                    "1. **Cerveau IA Gemini 2026 (`GeminiDualEngineClient`)** : Orchestration adaptative entre `gemini-3.8-flash` (rapide multimodal), `gemini-4-argon` (raisonnement profond) et `gemini-3.5-flash-lite` (ultra-basse latence).\n" +
+                    "2. **Mémoire Room SQLite v6 & RAG Hybride (`LiaSouvenirRagEngine`)** : **$souvenirsCount souvenir(s)** et **$factsCount fait(s) utilisateur** indexés avec embeddings en ligne `gemini-embedding-2`, cache vectoriel 64D, score lexical BM25 et décroissance temporelle.\n" +
+                    "3. **Apprentissage par Renforcement (`LiaReinforcementLearningEngine`)** : Table Q-Learning contextuelle adaptant la concision, le ton et les suggestions selon vos retours (`👍` / `👎`).\n" +
+                    "4. **Noyau Zero-Trust (`SoniaSecurityKernel` & `AppActionExecutor`)** : Chiffrement matériel `AES-256-GCM` (`AndroidKeyStore`), PIN `PBKDF2-HMAC-SHA256`, pare-feu anti-injection RAG, confirmation HITL et chaîne d'audit SHA-256 (**$auditBlocks bloc(s)** vérifiés).",
+                learnedBadge = "🛡️ Architecture LIA"
             )
         }
 
@@ -3170,292 +2852,12 @@ object LiaAssistantBrain {
         return null
     }
 
-    /**
-     * Moteur d'Utilitaires Instantanés (Général & Ultra-Précis) :
-     * 1. **Calculatrice & Pourcentages & Partage d'addition** ("Calcule 18% de 245", "Combien font 48 * 12", "Partage 135€ en 3")
-     * 2. **Conversions d'unités et de devises** ("Convertis 100 dollars en euros", "Convertis 25 miles en km", "75 fahrenheit en celsius")
-     * 3. **Traduction instantanée multilingue** ("Traduis bonjour comment vas-tu en japonais / anglais / espagnol / italien / allemand")
-     */
-    private fun checkInstantUtilityIntent(input: String): LiaBrainTurnOutcome? {
-        val trimmed = input.trim()
-        val lower = trimmed.lowercase()
-
-        // A. Mode Général : "Calculer ou convertir" / "Calculer" / "Convertir"
-        if (lower == "calculer ou convertir" || lower == "calculer" || lower == "convertir" || lower == "calculatrice") {
-            LiaMemoryAndHistoryStore.setPendingFollowUp(
-                LiaPendingFollowUp.WaitingForGeneralClarification("ASK_CALCULATION")
-            )
-            return LiaBrainTurnOutcome(
-                replyText = "🧮 **Que souhaitez-vous calculer ou convertir ?**\n*(Exemples : un pourcentage, une opération, une devise ou une distance)*",
-                learnedBadge = "🧮 Calcul & Conversion",
-                quickReplies = listOf(
-                    "Calcule 20% de 145€",
-                    "Partage 128€ en 4",
-                    "Convertis 100$ en euros",
-                    "Convertis 50 miles en km"
-                )
-            )
-        }
-
-        // B. Mode Général : "Traduire" / "Traduire un texte"
-        if (lower == "traduire" || lower == "traduire un texte" || lower == "traduction") {
-            LiaMemoryAndHistoryStore.setPendingFollowUp(
-                LiaPendingFollowUp.WaitingForGeneralClarification("ASK_TRANSLATION")
-            )
-            return LiaBrainTurnOutcome(
-                replyText = "🌍 **Quel texte souhaitez-vous traduire et dans quelle langue ?**",
-                learnedBadge = "🌍 Traduction instantanée",
-                quickReplies = listOf(
-                    "Traduis Bonjour, où est la gare ? en anglais",
-                    "Traduis Merci beaucoup en japonais",
-                    "Traduis L'addition s'il vous plaît en espagnol",
-                    "Traduis À bientôt en italien"
-                )
-            )
-        }
-
-        // C. Mode Précis 1 : Pourcentage ("calcule 18% de 245", "combien fait 15 % de 80€", "remise de 30% sur 120€")
-        val percentRegex = Regex(
-            "(?:calcule\\s+|combien\\s+f(?:ait|ont)\\s+|remise\\s+de\\s+|réduction\\s+de\\s+)?(\\d+(?:[.,]\\d+)?)\\s*%\\s*(?:de|sur)\\s*(\\d+(?:[.,]\\d+)?)\\s*(€|euros?|\\$|dollars?)?",
-            RegexOption.IGNORE_CASE
-        )
-        percentRegex.find(trimmed)?.let { m ->
-            val pct = m.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return@let
-            val total = m.groupValues[2].replace(",", ".").toDoubleOrNull() ?: return@let
-            val unit = m.groupValues.getOrNull(3).orEmpty().let { if (it.startsWith("euro")) "€" else if (it.startsWith("dollar")) "$" else it }
-            val value = (pct / 100.0) * total
-            val discounted = total - value
-            val added = total + value
-            return LiaBrainTurnOutcome(
-                replyText = "🧮 **Résultat du calcul (${formatNum(pct)}% de ${formatNum(total)}$unit)** :\n\n" +
-                    "• **Montant (${formatNum(pct)}%)** : **${formatNum(value)}$unit**\n" +
-                    "• **Après réduction (-${formatNum(pct)}%)** : **${formatNum(discounted)}$unit**\n" +
-                    "• **Après ajout (+${formatNum(pct)}%)** : **${formatNum(added)}$unit**",
-                learnedBadge = "🧮 ${formatNum(value)}$unit"
-            )
-        }
-
-        // D. Mode Précis 2 : Partage d'addition / Division ("partage 138€ en 4", "divise 90 euros par 3")
-        val splitBillRegex = Regex(
-            "(?:partage|divise|répartis|repartis)\\s+(\\d+(?:[.,]\\d+)?)\\s*(€|euros?|\\$)?\\s*(?:en|par|entre)\\s*(\\d+)\\s*(?:personnes?|parts?)?",
-            RegexOption.IGNORE_CASE
-        )
-        splitBillRegex.find(trimmed)?.let { m ->
-            val amount = m.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return@let
-            val unit = m.groupValues.getOrNull(2)?.ifBlank { "€" } ?: "€"
-            val people = m.groupValues[3].toIntOrNull()?.coerceAtLeast(1) ?: return@let
-            val perPerson = amount / people
-            return LiaBrainTurnOutcome(
-                replyText = "🧮 **Partage de ${formatNum(amount)}$unit entre $people personnes** :\n\n" +
-                    "• **Par personne** : **${formatNum(perPerson)}$unit**",
-                learnedBadge = "🧮 ${formatNum(perPerson)}$unit / pers."
-            )
-        }
-
-        // E. Mode Précis 3 : Conversions d'unités et devises ("convertis 100$ en euros", "50 miles en km", "80 kg en lbs", "25°C en °F")
-        val convRegex = Regex(
-            "(?:convertis(?:sez)?|combien\\s+font|transforme)?\\s*(\\d+(?:[.,]\\d+)?)\\s*(€|euros?|\\$|dollars?|usd|£|livres?|gbp|yen|jpy|chf|km|miles?|mi|kg|kilos?|lbs?|livres\\s+poids|m|pieds?|ft|cm|pouces?|inch(?:es)?|°?c|celsius|°?f|fahrenheit)\\s+(?:en|to|vers|in)\\s+(€|euros?|\\$|dollars?|usd|£|livres?|gbp|yen|jpy|chf|km|miles?|mi|kg|kilos?|lbs?|m|pieds?|ft|cm|pouces?|inch(?:es)?|°?c|celsius|°?f|fahrenheit)",
-            RegexOption.IGNORE_CASE
-        )
-        convRegex.find(trimmed)?.let { m ->
-            val v = m.groupValues[1].replace(",", ".").toDoubleOrNull() ?: return@let
-            val fromRaw = m.groupValues[2].lowercase()
-            val toRaw = m.groupValues[3].lowercase()
-            val resultPair = computeUnitOrCurrencyConversion(v, fromRaw, toRaw)
-            if (resultPair != null) {
-                val (formattedResult, explanation) = resultPair
-                return LiaBrainTurnOutcome(
-                    replyText = "🔄 **Conversion instantanée** :\n\n• **$formattedResult**\n*($explanation)*",
-                    learnedBadge = "🔄 $formattedResult"
-                )
-            }
-        }
-
-        // F. Mode Précis 4 : Calcul arithmétique direct ("calcule 145 * 12 + 30", "combien font 250 / 4")
-        if (lower.startsWith("calcule ") || lower.startsWith("combien font ") || lower.startsWith("combien fait ")) {
-            val exprRaw = trimmed
-                .replace(Regex("^(?:calcule|combien\\s+font|combien\\s+fait)\\s+", RegexOption.IGNORE_CASE), "")
-                .replace("?", "")
-                .replace("x", "*")
-                .replace("×", "*")
-                .replace("÷", "/")
-                .replace(",", ".")
-                .trim()
-            val evalResult = evaluateSimpleMathExpression(exprRaw)
-            if (evalResult != null) {
-                return LiaBrainTurnOutcome(
-                    replyText = "🧮 **Résultat du calcul** :\n\n`$exprRaw` = **${formatNum(evalResult)}**",
-                    learnedBadge = "🧮 = ${formatNum(evalResult)}"
-                )
-            }
-        }
-
-        // G. Mode Précis 5 : Traduction directe ("traduis [texte] en [langue]")
-        val transRegex = Regex(
-            "^(?:traduis|traduire|comment\\s+dit-on|comment\\s+on\\s+dit)\\s+(.+?)\\s+(?:en|vers\\s+le|vers\\s+l'|in)\\s+([a-zA-ZÀ-ÿ]+)\\??$",
-            RegexOption.IGNORE_CASE
-        )
-        transRegex.find(trimmed)?.let { m ->
-            val phrase = m.groupValues[1].trim().removeSurrounding("\"").removeSurrounding("«", "»").trim()
-            val targetLang = m.groupValues[2].trim().lowercase()
-            val localTrans = translateCommonPhraseLocally(phrase, targetLang)
-            if (localTrans != null) {
-                return LiaBrainTurnOutcome(
-                    replyText = "🌍 **Traduction en ${targetLang.replaceFirstChar { it.uppercase() }}** :\n\n" +
-                        "• Français : *« $phrase »*\n" +
-                        "• **${targetLang.replaceFirstChar { it.uppercase() }}** : **$localTrans**",
-                    learnedBadge = "🌍 Traduit en $targetLang"
-                )
-            }
-        }
-
-        return null
-    }
-
-    private fun formatNum(d: Double): String {
-        return if (d % 1.0 == 0.0) {
-            d.toLong().toString()
-        } else {
-            String.format(java.util.Locale.FRENCH, "%.2f", d)
-        }
-    }
-
-    private fun computeUnitOrCurrencyConversion(value: Double, from: String, to: String): Pair<String, String>? {
-        fun norm(u: String): String = when {
-            u in setOf("€", "euro", "euros") -> "EUR"
-            u in setOf("$", "dollar", "dollars", "usd") -> "USD"
-            u in setOf("£", "livre", "livres", "gbp") -> "GBP"
-            u in setOf("yen", "jpy") -> "JPY"
-            u == "chf" -> "CHF"
-            u == "km" -> "KM"
-            u.startsWith("mi") -> "MI"
-            u.startsWith("kg") || u.startsWith("kilo") -> "KG"
-            u.startsWith("lb") -> "LB"
-            u == "cm" -> "CM"
-            u.startsWith("pouce") || u.startsWith("inch") -> "IN"
-            u == "m" -> "M"
-            u.startsWith("pied") || u == "ft" -> "FT"
-            u.endsWith("c") || u == "celsius" -> "C"
-            u.endsWith("f") || u == "fahrenheit" -> "F"
-            else -> u.uppercase()
-        }
-        val f = norm(from)
-        val t = norm(to)
-        return when (f to t) {
-            "EUR" to "USD" -> "${formatNum(value)} € = ${formatNum(value * 1.08)} $" to "Taux indicatif : 1 € ≈ 1,08 $"
-            "USD" to "EUR" -> "${formatNum(value)} $ = ${formatNum(value * 0.925)} €" to "Taux indicatif : 1 $ ≈ 0,925 €"
-            "EUR" to "GBP" -> "${formatNum(value)} € = ${formatNum(value * 0.85)} £" to "Taux indicatif : 1 € ≈ 0,85 £"
-            "GBP" to "EUR" -> "${formatNum(value)} £ = ${formatNum(value * 1.17)} €" to "Taux indicatif : 1 £ ≈ 1,17 €"
-            "EUR" to "JPY" -> "${formatNum(value)} € = ${formatNum(value * 163.0)} ¥" to "Taux indicatif : 1 € ≈ 163 ¥"
-            "EUR" to "CHF" -> "${formatNum(value)} € = ${formatNum(value * 0.96)} CHF" to "Taux indicatif : 1 € ≈ 0,96 CHF"
-            "KM" to "MI" -> "${formatNum(value)} km = ${formatNum(value * 0.621371)} miles" to "Distance : 1 km = 0,621 mi"
-            "MI" to "KM" -> "${formatNum(value)} miles = ${formatNum(value * 1.60934)} km" to "Distance : 1 mile = 1,609 km"
-            "KG" to "LB" -> "${formatNum(value)} kg = ${formatNum(value * 2.20462)} lbs" to "Masse : 1 kg = 2,205 lbs"
-            "LB" to "KG" -> "${formatNum(value)} lbs = ${formatNum(value * 0.453592)} kg" to "Masse : 1 lb = 0,454 kg"
-            "CM" to "IN" -> "${formatNum(value)} cm = ${formatNum(value * 0.393701)} pouces" to "Longueur : 1 pouce = 2,54 cm"
-            "IN" to "CM" -> "${formatNum(value)} pouces = ${formatNum(value * 2.54)} cm" to "Longueur : 1 pouce = 2,54 cm"
-            "M" to "FT" -> "${formatNum(value)} m = ${formatNum(value * 3.28084)} pieds" to "Longueur : 1 m = 3,28 pieds"
-            "FT" to "M" -> "${formatNum(value)} pieds = ${formatNum(value * 0.3048)} m" to "Longueur : 1 pied = 0,305 m"
-            "C" to "F" -> "${formatNum(value)} °C = ${formatNum(value * 9.0 / 5.0 + 32.0)} °F" to "Température : (°C × 9/5) + 32"
-            "F" to "C" -> "${formatNum(value)} °F = ${formatNum((value - 32.0) * 5.0 / 9.0)} °C" to "Température : (°F - 32) × 5/9"
-            else -> null
-        }
-    }
-
-    private fun evaluateSimpleMathExpression(expr: String): Double? {
-        val clean = expr.replace(" ", "")
-        if (!clean.matches(Regex("^[0-9.+\\-*/()]+$"))) return null
-        return runCatching {
-            val tokens = Regex("(\\d+(?:\\.\\d+)?|[+\\-*/])").findAll(clean).map { it.value }.toList()
-            if (tokens.isEmpty()) return null
-            // First pass: * and /
-            val addSubList = mutableListOf<String>()
-            var i = 0
-            while (i < tokens.size) {
-                val tok = tokens[i]
-                if ((tok == "*" || tok == "/") && addSubList.isNotEmpty() && i + 1 < tokens.size) {
-                    val left = addSubList.removeAt(addSubList.lastIndex).toDouble()
-                    val right = tokens[i + 1].toDouble()
-                    val res = if (tok == "*") left * right else if (right != 0.0) left / right else return null
-                    addSubList.add(res.toString())
-                    i += 2
-                } else {
-                    addSubList.add(tok)
-                    i++
-                }
-            }
-            // Second pass: + and -
-            var acc = addSubList.firstOrNull()?.toDoubleOrNull() ?: return null
-            var j = 1
-            while (j + 1 < addSubList.size) {
-                val op = addSubList[j]
-                val nextVal = addSubList[j + 1].toDoubleOrNull() ?: return null
-                acc = if (op == "+") acc + nextVal else acc - nextVal
-                j += 2
-            }
-            acc
-        }.getOrNull()
-    }
-
-    private fun translateCommonPhraseLocally(phrase: String, targetLang: String): String? {
-        val p = phrase.lowercase().trim()
-        val lang = targetLang.lowercase().trim()
-        val dict = mapOf(
-            "bonjour" to mapOf(
-                "anglais" to "Hello / Good morning",
-                "espagnol" to "¡Hola! / Buenos días",
-                "italien" to "Buongiorno / Ciao",
-                "allemand" to "Guten Tag / Hallo",
-                "japonais" to "こんにちは (Konnichiwa)",
-                "arabe" to "مرحبا (Marhaban)",
-                "portugais" to "Olá / Bom dia"
-            ),
-            "merci" to mapOf(
-                "anglais" to "Thank you",
-                "espagnol" to "Muchas gracias",
-                "italien" to "Grazie mille",
-                "allemand" to "Vielen Dank",
-                "japonais" to "ありがとうございます (Arigatō gozaimasu)",
-                "arabe" to "شكراً (Shukran)",
-                "portugais" to "Obrigado / Obrigada"
-            ),
-            "merci beaucoup" to mapOf(
-                "anglais" to "Thank you very much!",
-                "espagnol" to "¡Muchísimas gracias!",
-                "italien" to "Grazie mille!",
-                "allemand" to "Vielen herzlichen Dank!",
-                "japonais" to "どうもありがとうございます (Dōmo arigatō gozaimasu)",
-                "arabe" to "شكراً جزيلاً (Shukran jazilan)",
-                "portugais" to "Muito obrigado!"
-            ),
-            "bonjour, où est la gare ?" to mapOf(
-                "anglais" to "Hello, where is the train station?",
-                "espagnol" to "Hola, ¿dónde está la estación de tren?",
-                "italien" to "Buongiorno, dov'è la stazione?",
-                "allemand" to "Hallo, wo ist der Bahnhof?",
-                "japonais" to "すみません、駅はどこですか？ (Sumimasen, eki wa doko desu ka?)"
-            ),
-            "l'addition s'il vous plaît" to mapOf(
-                "anglais" to "Could we have the bill, please?",
-                "espagnol" to "La cuenta, por favor.",
-                "italien" to "Il conto, per favore.",
-                "allemand" to "Die Rechnung, bitte.",
-                "japonais" to "お会計をお願いします (O-kaikei o onegaishimasu)"
-            ),
-            "à bientôt" to mapOf(
-                "anglais" to "See you soon!",
-                "espagnol" to "¡Hasta pronto!",
-                "italien" to "A presto!",
-                "allemand" to "Bis bald!",
-                "japonais" to "またね (Mata ne)"
-            )
-        )
-        return dict[p]?.get(lang)
-    }
+    private fun checkInstantUtilityIntent(input: String): LiaBrainTurnOutcome? =
+        LiaLocalUtilitiesEngine.checkInstantUtilityIntent(input)
 
     /**
      * Si la réponse de Gemini contient une balise d'action `[ACTION:cible:libellé]` pour une demande
-     * formulée librement, extrait l'action afin que `AppActionExecutor` l'exécute automatiquement.
+     * formulée librement, extrait l'action et la valide via le pare-feu Zero-Trust (`SEC-01`).
      */
     private fun extractEmbeddedActionFromAiReply(rawReply: String): Pair<String, LiaAppLaunchAction?> {
         val actionTagRegex = Regex("\\[ACTION:([^:\\]]+):([^\\]]+)\\]")
@@ -3463,6 +2865,13 @@ object LiaAssistantBrain {
         val targetRaw = match.groupValues[1].trim()
         val labelRaw = match.groupValues[2].trim()
         val cleanedReply = rawReply.replace(match.value, "").trim()
+
+        // SEC-01: Reject any unsafe or unapproved scheme before constructing an action
+        val safetyVerdict = SoniaSecurityKernel.validateActionTargetSafety(targetRaw)
+        if (safetyVerdict == ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET) {
+            return cleanedReply to null
+        }
+
         val resolvedAction = if (targetRaw.contains(":") || targetRaw.contains(".")) {
             LiaAppLaunchAction(labelRaw, targetRaw, "home_launcher", 40L)
         } else {
@@ -3478,10 +2887,23 @@ object LiaAssistantBrain {
         optimizedSystemInstruction: String? = null
     ): String {
         val snap = LiaMemoryAndHistoryStore.state.value
-        val isBriefMode = optimizedSystemInstruction != null && optimizedSystemInstruction.length < 480
+        val aiPrefs = LiaMcpConnectorRegistry.currentAiPreferences
+        val isBriefMode = (optimizedSystemInstruction != null && optimizedSystemInstruction.length < 480) ||
+            aiPrefs.reasoningDepthMode == com.example.service.LiaReasoningDepthMode.FAST_DIRECT ||
+            aiPrefs.responseToneStyle == com.example.service.LiaResponseToneStyle.ULTRA_BRIEF
         val recentMsgs = snap.activeMessages.dropLast(1).takeLast(if (isBriefMode) 3 else 8)
         val effectiveSystemInstruction = optimizedSystemInstruction?.ifBlank { null }
             ?: "Tu es LIA, assistante IA personnelle intelligente sur Android. Réponds directement en français dans un JSON {\"reply\": \"...\"} en exploitant avec précision les souvenirs de l'utilisateur."
+
+        // Select the official 2026 Gemini model based on user reasoning preferences
+        val selectedModel = when (aiPrefs.reasoningDepthMode) {
+            com.example.service.LiaReasoningDepthMode.DEEP_CHAIN -> GeminiDualEngineClient.MODEL_GEMINI_4_ARGON
+            com.example.service.LiaReasoningDepthMode.FAST_DIRECT -> GeminiDualEngineClient.MODEL_GEMINI_3_5_FLASH_LITE
+            com.example.service.LiaReasoningDepthMode.ADAPTIVE -> GeminiDualEngineClient.MODEL_GEMINI_3_8_FLASH
+        }
+
+        // SEC-01: Sanitize RAG context against indirect prompt injection before embedding into the prompt
+        val safeRagContext = SoniaSecurityKernel.sanitizeExternalRagContent(ragOutcome.augmentedPromptContext)
 
         val fullPrompt = buildString {
             if (!optimizedSystemInstruction.isNullOrBlank()) {
@@ -3490,8 +2912,8 @@ object LiaAssistantBrain {
                 appendLine()
             }
             if (!isBriefMode || ragOutcome.retrievedMatches.isNotEmpty()) {
-                // 1. Inject the retrieved RAG context
-                appendLine(ragOutcome.augmentedPromptContext)
+                // 1. Inject the sanitized RAG context
+                appendLine(safeRagContext)
                 appendLine()
                 // 2. Inject personal database & RL quick actions summary
                 appendLine(LiaMemoryAndHistoryStore.buildUserFactsContextPrompt())
@@ -3517,7 +2939,7 @@ object LiaAssistantBrain {
             withTimeout(30_000L) {
                 if (GeminiDualEngineClient.hasValidCustomApiKey()) {
                     val json = GeminiDualEngineClient.generateJsonWithRestFallback(
-                        primaryModel = "gemini-3.8-flash",
+                        primaryModel = selectedModel,
                         systemInstruction = "$effectiveSystemInstruction Réponds dans un JSON {\"reply\": \"...\"}.",
                         prompt = fullPrompt
                     )
@@ -3541,7 +2963,7 @@ object LiaAssistantBrain {
                         val unary = geminiModel.generateContent(fullPrompt).text?.trim().orEmpty()
                         if (unary.isNotBlank()) unary else {
                             val json = GeminiDualEngineClient.generateJsonWithRestFallback(
-                                primaryModel = "gemini-3.8-flash",
+                                primaryModel = selectedModel,
                                 systemInstruction = "$effectiveSystemInstruction Réponds en français dans un JSON {\"reply\": \"...\"}.",
                                 prompt = fullPrompt
                             )
@@ -3585,7 +3007,7 @@ object LiaAssistantBrain {
             q.contains("heure") || q.contains("date") -> "Il est actuellement ${currentTimeFormatted()}."
             q.contains("merci") -> "Avec plaisir$nameGreeting ! Je reste disponible ici ou via la bulle flottante à tout moment."
             else ->
-                "Je vous écoute$nameGreeting ! Vous pouvez me demander une action générale (ex: *« Envoyer un message »*, *« Appeler »*, *« Mettre un minuteur »*, *« Réglages rapides »*) ou une action ultra-précise (ex: *« Envoie salut à Paul sur WhatsApp »*, *« Retrouve mon dernier jeu dans Steam »*, *« Allume la lampe torche »*)."
+                "📡 *[Mode local hors-ligne]* Je vous écoute$nameGreeting ! Vous pouvez me demander une action locale (ex: *« Envoyer un message »*, *« Appeler »*, *« Mettre un minuteur »*, *« Calcule 20% de 150€ »*) ou configurer votre clé API Gemini dans **Paramètres → Clé API Gemini** pour les réponses IA complètes."
         }
     }
 }

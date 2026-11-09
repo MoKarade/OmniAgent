@@ -178,6 +178,9 @@ object LiaUniversalAppsAndGoogleHub {
     )
     val state: StateFlow<UniversalHubState> = _state.asStateFlow()
 
+    @Volatile
+    private var packageMonitorReceiver: BroadcastReceiver? = null
+
     /**
      * Initialise le scan dynamique de toutes les applications du téléphone et enregistre le
      * BroadcastReceiver système (`ACTION_PACKAGE_ADDED` / `ACTION_PACKAGE_REMOVED`) pour détecter
@@ -211,10 +214,22 @@ object LiaUniversalAppsAndGoogleHub {
                         } else {
                             appCtx.registerReceiver(receiver, filter)
                         }
+                        packageMonitorReceiver = receiver
                         receiverRegistered = true
                     }
                 }
             }
+        }
+    }
+
+    fun unregisterDynamicPackageMonitor(context: Context) {
+        synchronized(this) {
+            val receiver = packageMonitorReceiver ?: return
+            runCatching {
+                context.applicationContext.unregisterReceiver(receiver)
+            }
+            packageMonitorReceiver = null
+            receiverRegistered = false
         }
     }
 

@@ -150,6 +150,7 @@ object LiaMcpConnectorRegistry {
     private const val KEY_CONFIRM_SMS = "ai_confirm_sms"
     private const val KEY_VERBOSE_LOGS = "ai_verbose_logs"
 
+    @Volatile
     private var prefsLoaded = false
 
     private val _state = MutableStateFlow(
@@ -178,9 +179,15 @@ object LiaMcpConnectorRegistry {
     )
     val state: StateFlow<McpConnectorRegistryState> = _state.asStateFlow()
 
+    val currentAiPreferences: LiaAiPreferences
+        get() = _state.value.aiPreferences
+
     private fun ensurePrefsLoaded(context: Context?) {
         if (prefsLoaded || context == null) return
-        prefsLoaded = true
+        synchronized(this) {
+            if (prefsLoaded) return
+            prefsLoaded = true
+        }
         runCatching {
             val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val disabledConnectors = prefs.getStringSet(KEY_DISABLED_CONNECTORS, emptySet())?.toSet() ?: emptySet()

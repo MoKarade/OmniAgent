@@ -509,7 +509,14 @@ object LiaMemoryAndHistoryStore {
                 repo.upsertSouvenirs(initialSnap.souvenirs.map { it.toRoomEntity() })
             }
 
-            // Observe all 7 Room tables continuously (including lia_app_usage_frequency)
+            // Once one-time migration from legacy SharedPreferences to Room is done, purge legacy JSON keys
+            appContext?.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)?.edit()
+                ?.remove(KEY_THREADS_JSON)
+                ?.remove(KEY_USER_FACTS_JSON)
+                ?.remove(KEY_SHORTCUTS_JSON)
+                ?.apply()
+
+            // Observe all 7 Room tables continuously with a strongly-typed holder (no UNCHECKED_CAST)
             combine(
                 combine(repo.allThreads, repo.allMessages) { t, m -> t to m },
                 combine(repo.allUserFacts, repo.allSouvenirs) { f, s -> f to s },
@@ -539,47 +546,43 @@ object LiaMemoryAndHistoryStore {
                     )
                 }
 
-                val mappedFacts = factEntities.map { it.toDomainModel() }.ifEmpty { defaultUserFacts() }
-                val mappedShortcuts = shortcutEntities.map { it.toDomainModel() }.ifEmpty { defaultLearnedShortcuts() }
-                val mappedLtm = ltmEntities.map { it.toDomainModel() }.ifEmpty { defaultLongTermMemories() }
-                val mappedSouvenirs = souvenirEntities.map { it.toDomainModel() }.ifEmpty { defaultSouvenirs() }
-                val mappedAppUsages = appUsageEntities.map { it.toDomainModel() }
-
-                listOf(mappedThreads, mappedFacts, mappedShortcuts, mappedLtm, mappedSouvenirs, mappedAppUsages)
-            }.collect { combinedList ->
-                @Suppress("UNCHECKED_CAST")
-                val mappedThreads = combinedList[0] as List<LiaConversationThread>
-                @Suppress("UNCHECKED_CAST")
-                val mappedFacts = combinedList[1] as List<LiaUserFact>
-                @Suppress("UNCHECKED_CAST")
-                val mappedShortcuts = combinedList[2] as List<LiaLearnedShortcut>
-                @Suppress("UNCHECKED_CAST")
-                val mappedLtm = combinedList[3] as List<LiaLongTermMemoryItem>
-                @Suppress("UNCHECKED_CAST")
-                val mappedSouvenirs = combinedList[4] as List<LiaSouvenirItem>
-                @Suppress("UNCHECKED_CAST")
-                val mappedAppUsages = combinedList[5] as List<LiaAppUsageHabitItem>
-
+                CombinedRoomStreams(
+                    threads = mappedThreads,
+                    userFacts = factEntities.map { it.toDomainModel() }.ifEmpty { defaultUserFacts() },
+                    learnedShortcuts = shortcutEntities.map { it.toDomainModel() }.ifEmpty { defaultLearnedShortcuts() },
+                    longTermMemories = ltmEntities.map { it.toDomainModel() }.ifEmpty { defaultLongTermMemories() },
+                    souvenirs = souvenirEntities.map { it.toDomainModel() }.ifEmpty { defaultSouvenirs() },
+                    appUsageHabits = appUsageEntities.map { it.toDomainModel() }
+                )
+            }.collect { combined ->
                 _state.update { current ->
-                    val validThreadId = if (mappedThreads.any { it.id == current.currentThreadId }) {
+                    val validThreadId = if (combined.threads.any { it.id == current.currentThreadId }) {
                         current.currentThreadId
                     } else {
-                        mappedThreads.first().id
+                        combined.threads.first().id
                     }
                     current.copy(
                         currentThreadId = validThreadId,
-                        threads = mappedThreads,
-                        userFacts = mappedFacts,
-                        learnedShortcuts = mappedShortcuts,
-                        longTermMemories = mappedLtm,
-                        souvenirs = mappedSouvenirs,
-                        appUsageHabits = mappedAppUsages
+                        threads = combined.threads,
+                        userFacts = combined.userFacts,
+                        learnedShortcuts = combined.learnedShortcuts,
+                        longTermMemories = combined.longTermMemories,
+                        souvenirs = combined.souvenirs,
+                        appUsageHabits = combined.appUsageHabits
                     )
                 }
-                persistToPreferences()
             }
         }
     }
+
+    private data class CombinedRoomStreams(
+        val threads: List<LiaConversationThread>,
+        val userFacts: List<LiaUserFact>,
+        val learnedShortcuts: List<LiaLearnedShortcut>,
+        val longTermMemories: List<LiaLongTermMemoryItem>,
+        val souvenirs: List<LiaSouvenirItem>,
+        val appUsageHabits: List<LiaAppUsageHabitItem>
+    )
 
     private fun loadFromPreferences(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -634,15 +637,16 @@ object LiaMemoryAndHistoryStore {
         )
     }
 
+    /**
+     * PERF-01: Room v6 is the single source of truth for threads, messages, facts, souvenirs, and shortcuts.
+     * SharedPreferences only stores the lightweight active thread ID pointer.
+     */
     private fun persistToPreferences() {
         val ctx = appContext ?: return
         val snapshot = _state.value
         val prefs = ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit()
             .putString(KEY_CURRENT_THREAD_ID, snapshot.currentThreadId)
-            .putString(KEY_THREADS_JSON, serializeThreadsJson(snapshot.threads))
-            .putString(KEY_USER_FACTS_JSON, serializeFactsJson(snapshot.userFacts))
-            .putString(KEY_SHORTCUTS_JSON, serializeShortcutsJson(snapshot.learnedShortcuts))
             .apply()
     }
 
@@ -1281,14 +1285,14 @@ object LiaMemoryAndHistoryStore {
                     messages = thread.messages.map { msg ->
                         if (msg.id == messageId && msg.smsDraft != null) {
                             val newMsg = msg.copy(
-                                text = "✓ SMS envoyé à $cleanRecipient ($cleanPhone) : « $cleanBody »",
+                                text = "↗ Brouillon SMS ouvert dans Messages pour $cleanRecipient ($cleanPhone) : « $cleanBody »",
                                 smsDraft = msg.smsDraft.copy(
                                     recipientName = cleanRecipient,
                                     phoneNumber = cleanPhone,
                                     messageBody = cleanBody,
                                     isSent = true,
                                     isContactVerified = true,
-                                    contactVerificationStatus = "✓ Envoyé à $cleanRecipient ($cleanPhone)",
+                                    contactVerificationStatus = "↗ Ouvert dans Messages ($cleanPhone)",
                                     fuzzyMatchScore = 100
                                 )
                             )
@@ -1355,24 +1359,26 @@ object LiaMemoryAndHistoryStore {
             upsertUserFact("${cleanRecipient.lowercase()}_tel", "Numéro $cleanRecipient", cleanPhone)
         }
 
-        if (messageId != null) {
-            markSmsMessageSent(messageId, cleanRecipient, cleanPhone, cleanBody)
-        }
-        recordLearnedShortcut(
-            triggerPhrase = "SMS $cleanRecipient",
-            actionTitle = "Envoi direct SMS vérifié vers $cleanRecipient ($cleanPhone)",
-            targetPackageOrScreen = "smsto:$cleanPhone",
-            stepsSaved = 3,
-            latencyMs = 70L,
-            rewardSignal = 1.15f
-        )
-        runCatching {
+        val launched = runCatching {
             val smsIntent = Intent(Intent.ACTION_SENDTO, Uri.parse("smsto:$cleanPhone")).apply {
                 putExtra("sms_body", cleanBody)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(smsIntent)
+            true
+        }.getOrDefault(false)
+
+        if (launched && messageId != null) {
+            markSmsMessageSent(messageId, cleanRecipient, cleanPhone, cleanBody)
         }
+        recordLearnedShortcut(
+            triggerPhrase = "SMS $cleanRecipient",
+            actionTitle = "Ouverture SMS vérifié vers $cleanRecipient ($cleanPhone)",
+            targetPackageOrScreen = "smsto:$cleanPhone",
+            stepsSaved = 3,
+            latencyMs = 70L,
+            rewardSignal = 1.15f
+        )
     }
 
     fun launchAppFast(context: Context, packageName: String, appLabel: String = ""): Boolean {

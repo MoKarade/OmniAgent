@@ -21,6 +21,7 @@ import androidx.credentials.exceptions.GetCredentialException
 import androidx.credentials.exceptions.NoCredentialException
 import com.example.model.currentTimeFormatted
 import com.example.security.SafeContactResolver
+import com.example.security.SoniaSecurityKernel
 import com.google.android.libraries.identity.googleid.GetGoogleIdOption
 import com.google.android.libraries.identity.googleid.GetSignInWithGoogleOption
 import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
@@ -29,6 +30,9 @@ import com.google.firebase.auth.GoogleAuthProvider
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -87,7 +91,7 @@ data class GoogleWorkspaceAuthState(
     val isSyncingWorkspace: Boolean = false,
     val userUid: String = "",
     val userEmail: String = "",
-    val userDisplayName: String = "",
+    val userDisplayName: String,
     val userPhotoUrl: String = "",
     val idTokenPresent: Boolean = false,
     val hasCloudAccessToken: Boolean = false,
@@ -108,7 +112,43 @@ data class GoogleWorkspaceAuthState(
     val lastSyncSummary: String = "Prêt à synchroniser Gmail, Google Agenda, Drive et Contacts.",
     val lastSyncTimestamp: String = "",
     val authErrorMessage: String? = null
-)
+) {
+    constructor(
+        isSignedIn: Boolean = false,
+        isAuthenticating: Boolean = false,
+        isSyncingWorkspace: Boolean = false,
+        userUid: String = "",
+        userEmail: String = "",
+        userDisplayName: String = "",
+        userPhotoUrl: String = "",
+        idTokenPresent: Boolean = false,
+        hasCloudAccessToken: Boolean = false,
+        lastSyncSummary: String = "Prêt à synchroniser Gmail, Google Agenda, Drive et Contacts.",
+        authErrorMessage: String? = null
+    ) : this(
+        isSignedIn = isSignedIn,
+        isAuthenticating = isAuthenticating,
+        isSyncingWorkspace = isSyncingWorkspace,
+        userUid = userUid,
+        userEmail = userEmail,
+        userDisplayName = userDisplayName,
+        userPhotoUrl = userPhotoUrl,
+        idTokenPresent = idTokenPresent,
+        hasCloudAccessToken = hasCloudAccessToken,
+        authorizedScopes = listOf(
+            "https://www.googleapis.com/auth/gmail.readonly",
+            "https://www.googleapis.com/auth/gmail.send",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/drive.readonly",
+            "https://www.googleapis.com/auth/contacts.readonly",
+            "https://www.googleapis.com/auth/tasks",
+            "https://www.googleapis.com/auth/documents.readonly",
+            "https://www.googleapis.com/auth/spreadsheets.readonly"
+        ),
+        lastSyncSummary = lastSyncSummary,
+        authErrorMessage = authErrorMessage
+    )
+}
 
 /**
  * Gestionnaire unifié Google Sign-In (Jetpack Credential Manager) + APIs Google Cloud Workspace
@@ -125,7 +165,7 @@ object LiaGoogleCloudWorkspaceClient {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    private val _state = MutableStateFlow(GoogleWorkspaceAuthState())
+    private val _state = MutableStateFlow(GoogleWorkspaceAuthState(userDisplayName = ""))
     val state: StateFlow<GoogleWorkspaceAuthState> = _state.asStateFlow()
 
     @Volatile
@@ -134,7 +174,20 @@ object LiaGoogleCloudWorkspaceClient {
     fun init(context: Context) {
         val appCtx = context.applicationContext
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        cachedAccessToken = prefs.getString(KEY_OAUTH_ACCESS_TOKEN, "")?.trim().orEmpty()
+        val rawStoredToken = prefs.getString(KEY_OAUTH_ACCESS_TOKEN, "")?.trim().orEmpty()
+        cachedAccessToken = if (rawStoredToken.isNotBlank()) {
+            val decrypted = SoniaSecurityKernel.decryptSensitivePayload(rawStoredToken)
+            // SEC-02: Auto-migrate legacy plaintext OAuth token to AES-256-GCM ciphertext
+            if (!rawStoredToken.startsWith("ENCv1:") && decrypted.isNotBlank()) {
+                val encrypted = SoniaSecurityKernel.encryptSensitivePayload(decrypted)
+                if (encrypted.startsWith("ENCv1:")) {
+                    prefs.edit().putString(KEY_OAUTH_ACCESS_TOKEN, encrypted).apply()
+                }
+            }
+            decrypted
+        } else {
+            ""
+        }
         val savedEmail = prefs.getString(KEY_USER_EMAIL, "")?.trim().orEmpty()
         val savedName = prefs.getString(KEY_USER_NAME, "")?.trim().orEmpty()
 
@@ -170,7 +223,7 @@ object LiaGoogleCloudWorkspaceClient {
     }
 
     /**
-     * Sauvegarde un jeton d'accès OAuth2 Bearer Google Cloud (issu de GoogleAuthUtil ou saisi par l'utilisateur)
+     * Sauvegarde un jeton d'accès OAuth2 Bearer Google Cloud chiffré via AndroidKeyStore AES-256-GCM (`SEC-02`)
      * et lance immédiatement la synchronisation des 4 APIs Google Workspace (Gmail, Calendar, Drive, Contacts).
      */
     fun updateOAuthAccessToken(context: Context, accessToken: String, optionalEmail: String = "") {
@@ -178,7 +231,11 @@ object LiaGoogleCloudWorkspaceClient {
         cachedAccessToken = cleanToken
         val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         prefs.edit().apply {
-            putString(KEY_OAUTH_ACCESS_TOKEN, cleanToken)
+            if (cleanToken.isBlank()) {
+                remove(KEY_OAUTH_ACCESS_TOKEN)
+            } else {
+                putString(KEY_OAUTH_ACCESS_TOKEN, SoniaSecurityKernel.encryptSensitivePayload(cleanToken))
+            }
             if (optionalEmail.isNotBlank()) {
                 putString(KEY_USER_EMAIL, optionalEmail.trim())
             }
@@ -191,7 +248,7 @@ object LiaGoogleCloudWorkspaceClient {
                 hasCloudAccessToken = cleanToken.isNotBlank(),
                 authErrorMessage = null,
                 lastSyncSummary = if (cleanToken.isNotBlank()) {
-                    "Jeton OAuth2 Google Cloud actif. Synchronisation des APIs en cours…"
+                    "Jeton OAuth2 Google Cloud chiffré (AES-256-GCM). Synchronisation des APIs en cours…"
                 } else {
                     it.lastSyncSummary
                 }
@@ -354,7 +411,7 @@ object LiaGoogleCloudWorkspaceClient {
             putString(KEY_USER_EMAIL, email)
             putString(KEY_USER_NAME, displayName)
             if (cachedAccessToken.isNotBlank()) {
-                putString(KEY_OAUTH_ACCESS_TOKEN, cachedAccessToken)
+                putString(KEY_OAUTH_ACCESS_TOKEN, SoniaSecurityKernel.encryptSensitivePayload(cachedAccessToken))
             }
         }.apply()
 
@@ -444,9 +501,10 @@ object LiaGoogleCloudWorkspaceClient {
     }
 
     /**
-     * Synchronise simultanément Gmail, Google Calendar, Google Drive et Google Contacts
-     * via les APIs Google Cloud REST (si un jeton OAuth2 est actif) et les ContentProviders Android
-     * (`CalendarContract`, `ContactsContract`), puis indexe les résultats dans la base Room RAG de LIA.
+     * Synchronise simultanément (en parallèle via `async` / `coroutineScope`, `PERF-02`)
+     * Gmail, Google Calendar, Google Drive et Google Contacts via les APIs Google Cloud REST
+     * (si un jeton OAuth2 est actif) et les ContentProviders Android (`CalendarContract`, `ContactsContract`),
+     * puis indexe les résultats dans la base Room RAG de LIA.
      */
     fun syncAllWorkspaceData(context: Context) {
         val appCtx = context.applicationContext
@@ -455,14 +513,23 @@ object LiaGoogleCloudWorkspaceClient {
                 it.copy(
                     isSyncingWorkspace = true,
                     authErrorMessage = null,
-                    lastSyncSummary = "Synchronisation de Gmail, Agenda, Drive et Contacts…"
+                    lastSyncSummary = "Synchronisation parallèle de Gmail, Agenda, Drive et Contacts…"
                 )
             }
 
-            val emails = fetchGmailMessagesInternal(cachedAccessToken)
-            val events = fetchCalendarEventsInternal(appCtx, cachedAccessToken)
-            val driveFiles = fetchDriveFilesInternal(cachedAccessToken)
-            val contacts = fetchContactsInternal(appCtx, cachedAccessToken)
+            val token = cachedAccessToken
+            val (emails, events, driveFiles, contacts) = coroutineScope {
+                val emailsDeferred = async(Dispatchers.IO) { fetchGmailMessagesInternal(token) }
+                val eventsDeferred = async(Dispatchers.IO) { fetchCalendarEventsInternal(appCtx, token) }
+                val driveDeferred = async(Dispatchers.IO) { fetchDriveFilesInternal(token) }
+                val contactsDeferred = async(Dispatchers.IO) { fetchContactsInternal(appCtx, token) }
+                WorkspaceSyncBundle(
+                    emails = emailsDeferred.await(),
+                    events = eventsDeferred.await(),
+                    driveFiles = driveDeferred.await(),
+                    contacts = contactsDeferred.await()
+                )
+            }
             val now = currentTimeFormatted()
 
             val summaryParts = mutableListOf<String>()
@@ -493,6 +560,13 @@ object LiaGoogleCloudWorkspaceClient {
         }
     }
 
+    private data class WorkspaceSyncBundle(
+        val emails: List<GoogleCloudEmailItem>,
+        val events: List<GoogleCloudCalendarEventItem>,
+        val driveFiles: List<GoogleCloudDriveFileItem>,
+        val contacts: List<GoogleCloudContactItem>
+    )
+
     // =========================================================================
     // 1. GMAIL CLOUD API (gmail.googleapis.com/gmail/v1) + Native Intent Bridge
     // =========================================================================
@@ -500,7 +574,6 @@ object LiaGoogleCloudWorkspaceClient {
     private suspend fun fetchGmailMessagesInternal(accessToken: String): List<GoogleCloudEmailItem> =
         withContext(Dispatchers.IO) {
             if (accessToken.isBlank()) return@withContext emptyList()
-            val results = mutableListOf<GoogleCloudEmailItem>()
             try {
                 val listJson = executeGoogleGetRequest(
                     url = "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=5",
@@ -508,53 +581,63 @@ object LiaGoogleCloudWorkspaceClient {
                 ) ?: return@withContext emptyList()
 
                 val messagesArray = JSONObject(listJson).optJSONArray("messages") ?: return@withContext emptyList()
-                for (i in 0 until messagesArray.length()) {
-                    val msgObj = messagesArray.optJSONObject(i) ?: continue
-                    val msgId = msgObj.optString("id")
-                    if (msgId.isBlank()) continue
-
-                    val detailJson = executeGoogleGetRequest(
-                        url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/$msgId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date",
-                        accessToken = accessToken
-                    ) ?: continue
-
-                    val detailObj = JSONObject(detailJson)
-                    val snippet = detailObj.optString("snippet", "").trim()
-                    val headers = detailObj.optJSONObject("payload")?.optJSONArray("headers") ?: JSONArray()
-                    var subject = "(Sans objet)"
-                    var from = "Expéditeur inconnu"
-                    var dateStr = ""
-                    for (h in 0 until headers.length()) {
-                        val hObj = headers.optJSONObject(h) ?: continue
-                        when (hObj.optString("name").lowercase()) {
-                            "subject" -> subject = hObj.optString("value", subject)
-                            "from" -> from = hObj.optString("value", from)
-                            "date" -> dateStr = hObj.optString("value", "").take(22)
-                        }
+                val msgIds = buildList {
+                    for (i in 0 until messagesArray.length()) {
+                        val msgId = messagesArray.optJSONObject(i)?.optString("id").orEmpty()
+                        if (msgId.isNotBlank()) add(msgId)
                     }
+                }
+                if (msgIds.isEmpty()) return@withContext emptyList()
 
-                    val item = GoogleCloudEmailItem(
-                        id = msgId,
-                        subject = subject,
-                        from = from,
-                        snippet = snippet,
-                        dateFormatted = dateStr
-                    )
-                    results.add(item)
+                // PERF-02: Fetch metadata for all message IDs concurrently using async + awaitAll
+                val fetchedItems = coroutineScope {
+                    msgIds.map { msgId ->
+                        async(Dispatchers.IO) {
+                            val detailJson = executeGoogleGetRequest(
+                                url = "https://gmail.googleapis.com/gmail/v1/users/me/messages/$msgId?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date",
+                                accessToken = accessToken
+                            ) ?: return@async null
 
-                    // Index in Room Souvenirs for RAG
+                            val detailObj = JSONObject(detailJson)
+                            val snippet = detailObj.optString("snippet", "").trim()
+                            val headers = detailObj.optJSONObject("payload")?.optJSONArray("headers") ?: JSONArray()
+                            var subject = "(Sans objet)"
+                            var from = "Expéditeur inconnu"
+                            var dateStr = ""
+                            for (h in 0 until headers.length()) {
+                                val hObj = headers.optJSONObject(h) ?: continue
+                                when (hObj.optString("name").lowercase()) {
+                                    "subject" -> subject = hObj.optString("value", subject)
+                                    "from" -> from = hObj.optString("value", from)
+                                    "date" -> dateStr = hObj.optString("value", "").take(22)
+                                }
+                            }
+
+                            GoogleCloudEmailItem(
+                                id = msgId,
+                                subject = subject,
+                                from = from,
+                                snippet = snippet,
+                                dateFormatted = dateStr
+                            )
+                        }
+                    }.awaitAll().filterNotNull()
+                }
+
+                fetchedItems.forEach { item ->
                     LiaMemoryAndHistoryStore.upsertSouvenir(
                         type = "FAIT",
-                        subjectKey = "gmail_msg_${msgId.take(12)}",
-                        title = "E-mail Gmail : $subject",
-                        detailValue = "De : $from — Extrait : $snippet",
-                        searchTags = "gmail,email,mail,${subject.lowercase()},${from.lowercase()}"
+                        subjectKey = "gmail_msg_${item.id.take(12)}",
+                        title = "E-mail Gmail : ${item.subject}",
+                        detailValue = "De : ${item.from} — Extrait : ${item.snippet}",
+                        searchTags = "gmail,email,mail,${item.subject.lowercase()},${item.from.lowercase()}"
                     )
                 }
+                fetchedItems
             } catch (e: Exception) {
                 Log.w(TAG, "Gmail API fetch warning: ${e.message}")
+                emptyList()
             }
-            results
         }
 
     /**
@@ -993,9 +1076,11 @@ object LiaGoogleCloudWorkspaceClient {
             if (code in 200..299) {
                 BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
+                handleHttpAuthFailureIfNeeded(code, url)
                 null
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Google GET request failed for ${url.substringBefore("?")}: ${e.message}")
             null
         } finally {
             conn?.disconnect()
@@ -1022,12 +1107,26 @@ object LiaGoogleCloudWorkspaceClient {
             if (code in 200..299) {
                 BufferedReader(InputStreamReader(conn.inputStream, Charsets.UTF_8)).use { it.readText() }
             } else {
+                handleHttpAuthFailureIfNeeded(code, url)
                 null
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "Google POST request failed for ${url.substringBefore("?")}: ${e.message}")
             null
         } finally {
             conn?.disconnect()
+        }
+    }
+
+    private fun handleHttpAuthFailureIfNeeded(statusCode: Int, url: String) {
+        val endpoint = url.substringBefore("?")
+        Log.w(TAG, "Google Workspace API returned HTTP $statusCode for $endpoint")
+        if (statusCode == 401 || statusCode == 403) {
+            _state.update {
+                it.copy(
+                    authErrorMessage = "Jeton OAuth2 Google Cloud expiré ou insuffisant (HTTP $statusCode). Reconnectez-vous ou mettez à jour votre jeton."
+                )
+            }
         }
     }
 }

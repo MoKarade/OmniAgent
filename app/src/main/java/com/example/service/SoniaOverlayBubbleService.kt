@@ -1167,6 +1167,20 @@ class SoniaOverlayBubbleService : Service() {
         inputEditText?.setText("")
         hideKeyboard(inputEditText)
 
+        // SEC-05: Zero-Trust Check for Vault PIN Lock & Global Lockdown Policy in Floating Bubble
+        if (SoniaSecurityKernel.isVaultLockedRuntime) {
+            refreshOverlayConversationHistory(
+                thinkingStatus = "🔒 LIA est verrouillée par code PIN. Déverrouillez-la dans Paramètres > Sécurité & PIN."
+            )
+            return
+        }
+        if (SoniaSecurityKernel.globalPolicyRuntime == com.example.model.GlobalAccessPolicyMode.LOCKDOWN) {
+            refreshOverlayConversationHistory(
+                thinkingStatus = "🛑 Mode Verrouillage Total actif. Autorisez l'accès dans Paramètres > Sécurité & PIN."
+            )
+            return
+        }
+
         // DLP & Anti-Injection Security Check
         val dlp = SoniaSecurityKernel.inspectAndSanitize(rawQuery)
         if (!dlp.isSafe) {
@@ -1186,10 +1200,12 @@ class SoniaOverlayBubbleService : Service() {
                 )
             }
             outcome.appLaunchAction?.let { launchAction ->
-                LiaMemoryAndHistoryStore.launchAppFast(
+                // SEC-01: Sensitive URIs (tel:, smsto:, mailto:, https://) require explicit user tap on the bubble action button
+                AppActionExecutor.executeTargetDirectly(
                     context = this@SoniaOverlayBubbleService,
-                    packageName = launchAction.packageName,
-                    appLabel = launchAction.appLabel
+                    targetPackageOrUri = launchAction.packageName,
+                    label = launchAction.appLabel,
+                    userExplicitlyConfirmed = false
                 )
             }
             refreshOverlayConversationHistory(

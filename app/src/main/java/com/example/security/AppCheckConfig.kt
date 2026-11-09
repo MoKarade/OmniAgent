@@ -5,13 +5,12 @@ import android.content.Intent
 import android.util.Log
 import com.example.BuildConfig
 import com.google.firebase.FirebaseApp
+import com.google.firebase.appcheck.AppCheckProviderFactory
 import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
 import com.google.firebase.appcheck.recaptcha.RecaptchaAppCheckProviderFactory
 
 private const val TAG = "AppCheckInit"
 
-// App Check contract keys defined by the Firebase SDK and runtime harness
 private const val DEBUG_TOKEN_EXTRA = "FIREBASE_APPCHECK_DEBUG_TOKEN"
 private const val DEBUG_STORE_PREFIX = "com.google.firebase.appcheck.debug.store."
 private const val DEBUG_SECRET_KEY = "com.google.firebase.appcheck.debug.DEBUG_SECRET"
@@ -19,13 +18,35 @@ private const val RECAPTCHA_SITE_KEY_RES = "recaptcha_site_key"
 
 fun configureAppCheck(context: Context, intent: Intent?) {
     try {
-        // 1. Ensure FirebaseApp is initialized
         if (FirebaseApp.getApps(context).isEmpty()) {
-            FirebaseApp.initializeApp(context)
+            val app = runCatching { FirebaseApp.initializeApp(context) }.getOrNull()
+            if (app == null) {
+                val apiKeyRes = context.resources.getIdentifier("google_api_key", "string", context.packageName)
+                val appIdRes = context.resources.getIdentifier("google_app_id", "string", context.packageName)
+                val projIdRes = context.resources.getIdentifier("project_id", "string", context.packageName)
+                val bucketRes = context.resources.getIdentifier("google_storage_bucket", "string", context.packageName)
+                val senderIdRes = context.resources.getIdentifier("gcm_defaultSenderId", "string", context.packageName)
+
+                val apiKey = if (apiKeyRes != 0) context.getString(apiKeyRes).trim() else ""
+                val appId = if (appIdRes != 0) context.getString(appIdRes).trim() else ""
+                val projId = if (projIdRes != 0) context.getString(projIdRes).trim() else ""
+                val bucket = if (bucketRes != 0) context.getString(bucketRes).trim() else ""
+                val senderId = if (senderIdRes != 0) context.getString(senderIdRes).trim() else ""
+
+                if (apiKey.isNotBlank() && appId.isNotBlank() && projId.isNotBlank()) {
+                    val builder = com.google.firebase.FirebaseOptions.Builder()
+                        .setApiKey(apiKey)
+                        .setApplicationId(appId)
+                        .setProjectId(projId)
+                    if (bucket.isNotBlank()) builder.setStorageBucket(bucket)
+                    if (senderId.isNotBlank()) builder.setGcmSenderId(senderId)
+                    FirebaseApp.initializeApp(context, builder.build())
+                    Log.d(TAG, "FirebaseApp initialized via explicit FirebaseOptions fallback.")
+                }
+            }
         }
 
         if (BuildConfig.DEBUG) {
-            // 2. Debug: Read debug token from Intent extra
             val debugToken = intent?.getStringExtra(DEBUG_TOKEN_EXTRA)
 
             if (!debugToken.isNullOrEmpty()) {
@@ -34,22 +55,22 @@ fun configureAppCheck(context: Context, intent: Intent?) {
                     "$DEBUG_STORE_PREFIX$persistenceKey",
                     Context.MODE_PRIVATE
                 )
-                // CRITICAL: MUST use synchronous commit() so the secret is written
-                // before DebugAppCheckProviderFactory reads it.
                 prefs.edit()
                     .putString(DEBUG_SECRET_KEY, debugToken)
                     .commit()
                 Log.d(TAG, "App Check debug secret configured successfully.")
-            } else {
-                Log.w(TAG, "No debug token found in Intent extra.")
             }
 
-            FirebaseAppCheck.getInstance().installAppCheckProviderFactory(
-                DebugAppCheckProviderFactory.getInstance()
-            )
-            Log.d(TAG, "DebugAppCheckProviderFactory installed.")
+            val debugFactory = runCatching {
+                val clazz = Class.forName("com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory")
+                clazz.getMethod("getInstance").invoke(null) as? AppCheckProviderFactory
+            }.getOrNull()
+
+            if (debugFactory != null) {
+                FirebaseAppCheck.getInstance().installAppCheckProviderFactory(debugFactory)
+                Log.d(TAG, "DebugAppCheckProviderFactory installed.")
+            }
         } else {
-            // 3. Release: Look up recaptcha_site_key safely without throwing Resources.NotFoundException
             val resId = context.resources.getIdentifier(
                 RECAPTCHA_SITE_KEY_RES,
                 "string",

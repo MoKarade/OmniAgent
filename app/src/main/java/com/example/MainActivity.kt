@@ -80,19 +80,12 @@ import com.example.data.OmniFirestoreRepository
 import com.example.security.configureAppCheck
 import com.example.ui.auth.AuthScreen
 import com.example.ui.components.ApiKeyConfigDialog
-import com.example.ui.screens.AgentFleetAndHistoryScreen
-import com.example.ui.screens.AppAccessControlScreen
 import com.example.ui.screens.LiaSettingsScreen
 import com.example.ui.screens.OperatorConsoleScreen
-import com.example.ui.theme.ActionEmerald
-import com.example.ui.theme.GoogleBackground
 import com.example.ui.theme.GoogleBlue
 import com.example.ui.theme.GoogleBlueContainer
-import com.example.ui.theme.GoogleSurface
-import com.example.ui.theme.GoogleSurfaceVariant
 import com.example.ui.theme.GoogleTextPrimary
 import com.example.ui.theme.GoogleTextSecondary
-import com.example.ui.theme.GoogleYellow
 import com.example.ui.theme.MyApplicationTheme
 import com.example.viewmodel.OmniAgentViewModel
 import com.google.firebase.auth.FirebaseAuth
@@ -106,9 +99,7 @@ enum class OmniDestination(
     val unselectedIcon: ImageVector
 ) {
     CONSOLE("console", R.string.nav_console, Icons.Filled.ChatBubble, Icons.Outlined.ChatBubbleOutline),
-    SETTINGS("settings", R.string.nav_console, Icons.Filled.Settings, Icons.Outlined.Settings),
-    APP_ACCESS("app_access", R.string.nav_app_access, Icons.Filled.Shield, Icons.Outlined.Shield),
-    AGENTS_TASKS("agents_tasks", R.string.nav_agents_tasks, Icons.Filled.SmartToy, Icons.Outlined.SmartToy)
+    SETTINGS("settings", R.string.nav_settings, Icons.Filled.Settings, Icons.Outlined.Settings)
 }
 
 class MainActivity : ComponentActivity() {
@@ -183,8 +174,12 @@ fun OmniRootAuthHost() {
     }
 
     val firestoreRepository = remember(context) {
-        val databaseId = context.getString(R.string.firestore_database_id)
-        val firestore = FirebaseFirestore.getInstance(databaseId)
+        val databaseId = runCatching { context.getString(R.string.firestore_database_id) }.getOrNull().orEmpty().trim()
+        val firestore = if (databaseId.isNotBlank() && databaseId != "(default)") {
+            runCatching { FirebaseFirestore.getInstance(databaseId) }.getOrElse { FirebaseFirestore.getInstance() }
+        } else {
+            FirebaseFirestore.getInstance()
+        }
         OmniFirestoreRepository(firestore)
     }
 
@@ -251,19 +246,15 @@ fun OmniAgentApp(
     val context = LocalContext.current
     val uiState by agentViewModel.uiState.collectAsStateWithLifecycle()
     var currentTab by rememberSaveable { mutableStateOf(OmniDestination.CONSOLE) }
-    var showMoreMenu by remember { mutableStateOf(false) }
+
+    LaunchedEffect(context) {
+        agentViewModel.refreshSecurityState(context)
+    }
 
     // Retour fluide vers l'assistant depuis les vues secondaires
     BackHandler(enabled = currentTab != OmniDestination.CONSOLE) {
         currentTab = OmniDestination.CONSOLE
     }
-
-    // Flou dynamique d'arrière-plan lorsque le menu d'options est ouvert
-    val mainContentBlur by animateDpAsState(
-        targetValue = if (showMoreMenu) 10.dp else 0.dp,
-        animationSpec = tween(durationMillis = 220),
-        label = "mainContentBlur"
-    )
 
     val triggerSystemWideBubble: () -> Unit = {
         if (com.example.service.SoniaOverlayBubbleService.canDrawOverlays(context)) {
@@ -425,12 +416,11 @@ fun OmniAgentApp(
                 }
             }
         ) { innerPadding ->
-            // Corps principal avec flou dynamique et transitions de navigation fluides (AnimatedContent)
+            // Corps principal avec transitions de navigation fluides (AnimatedContent)
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(innerPadding)
-                    .blur(mainContentBlur)
             ) {
                 AnimatedContent(
                     targetState = currentTab,
@@ -456,8 +446,7 @@ fun OmniAgentApp(
                         OmniDestination.CONSOLE -> OperatorConsoleScreen(
                             uiState = uiState,
                             viewModel = agentViewModel,
-                            onOpenAccessPermissions = { agentId ->
-                                agentViewModel.selectPermissionTargetAgent(agentId)
+                            onOpenAccessPermissions = {
                                 currentTab = OmniDestination.SETTINGS
                             },
                             onOpenGoogleSignIn = onOpenAuthScreen
@@ -471,26 +460,7 @@ fun OmniAgentApp(
                             onOpenApiKeyDialog = onOpenApiKeyDialog,
                             onOpenAuthScreen = onOpenAuthScreen,
                             onSignOut = onSignOut,
-                            onTriggerSystemBubble = triggerSystemWideBubble,
-                            onOpenDetailedAppAccess = { currentTab = OmniDestination.APP_ACCESS },
-                            onOpenAgentFleet = { currentTab = OmniDestination.AGENTS_TASKS }
-                        )
-                        OmniDestination.APP_ACCESS -> AppAccessControlScreen(
-                            uiState = uiState,
-                            viewModel = agentViewModel,
-                            onInspectAppInConsole = { screenId ->
-                                agentViewModel.selectScreenManually(screenId)
-                                currentTab = OmniDestination.CONSOLE
-                            }
-                        )
-                        OmniDestination.AGENTS_TASKS -> AgentFleetAndHistoryScreen(
-                            uiState = uiState,
-                            viewModel = agentViewModel,
-                            onSwitchToConsole = { currentTab = OmniDestination.CONSOLE },
-                            onOpenAgentPermissions = { agentId ->
-                                agentViewModel.selectPermissionTargetAgent(agentId)
-                                currentTab = OmniDestination.APP_ACCESS
-                            }
+                            onTriggerSystemBubble = triggerSystemWideBubble
                         )
                     }
                 }

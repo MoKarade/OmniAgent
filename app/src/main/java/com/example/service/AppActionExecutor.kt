@@ -15,11 +15,10 @@ import android.provider.CalendarContract
 import android.provider.MediaStore
 import android.provider.Settings
 import com.example.data.LiaUniversalAppsAndGoogleHub
-import com.example.model.AppAccessPermission
 import com.example.model.FastPathDispatchResult
 import com.example.model.GlobalAccessPolicyMode
-import com.example.model.ScopedAccessToken
 import com.example.model.currentTimeFormatted
+import com.example.security.ActionTargetSafetyVerdict
 import com.example.security.SoniaSecurityKernel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -43,12 +42,12 @@ data class AppActionExecutionRecord(
     val extractedParamsSummary: String,
     val succeeded: Boolean,
     val executedViaFastPathQueue: Boolean = true,
-    val safetyValidationSummary: String = "Zero-Trust DLP + Jeton SHA-256 validés"
+    val safetyValidationSummary: String = "Zero-Trust DLP + Permissions MCP validés"
 )
 
 data class FastPathQueuedTask(
     val taskId: String = "fp_${System.currentTimeMillis()}",
-    val context: Context,
+    val appContext: Context,
     val spec: ClassifiedUserIntent,
     val safetyAuditSummary: String,
     val enqueuedAtMs: Long = System.currentTimeMillis(),
@@ -60,14 +59,13 @@ data class FastPathQueueMetrics(
     val totalSafetyBlocked: Int = 0,
     val totalHitlEscalated: Int = 0,
     val averageFastPathLatencyMs: Long = 8L,
-    val lastFastPathSummary: String = "File Fast-Path prête (contournement délibération LLM pour tâches routines)"
+    val lastFastPathSummary: String = "File Fast-Path prête (actions système directes avec garde-fou Zero-Trust)"
 )
 
 /**
  * Service d'exécution directe d'actions (`AppActionExecutor`) doté d'une file d'exécution
- * **Fast-Path (`fastPathQueue`)** qui contourne la délibération LLM haute-latence pour les tâches
- * système de routine (ouverture d'applications, alarmes, minuteurs, lampe torche, réglages, caméra, navigation)
- * tout en appliquant une validation de sécurité Zero-Trust stricte (Pare-feu DLP, Verrou PIN, Jetons Scopés, Garde HITL).
+ * **Fast-Path (`fastPathQueue`)** et d'une porte de sécurité Zero-Trust unifiée (Verrou PIN PBKDF2,
+ * Mode Lockdown, Pare-feu DLP Luhn, Liste blanche d'URI et Permissions MCP par application).
  */
 class AppActionExecutor : Service() {
 
@@ -78,7 +76,7 @@ class AppActionExecutor : Service() {
             val targetUriOrPkg = intent.getStringExtra(EXTRA_TARGET_URI_OR_PKG).orEmpty()
             val appLabel = intent.getStringExtra(EXTRA_APP_LABEL).orEmpty()
             val rawCommand = intent.getStringExtra(EXTRA_RAW_COMMAND).orEmpty()
-            if (targetUriOrPkg.isNotBlank()) {
+            if (targetUriOrPkg.isNotBlank() && isExecutionPermittedByGlobalSecurity(applicationContext, targetUriOrPkg, userExplicitlyConfirmed = true)) {
                 val spec = IntentHandler.buildIntentSpecFromTarget(
                     appLabel = appLabel,
                     packageNameOrUri = targetUriOrPkg,
@@ -111,7 +109,6 @@ class AppActionExecutor : Service() {
         private val fastPathScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
         private val fastPathQueue = Channel<FastPathQueuedTask>(capacity = Channel.UNLIMITED)
 
-        // Ensemble des types d'intentions système de routine éligibles au contournement de délibération haute-latence
         private val ROUTINE_FAST_PATH_INTENT_TYPES = setOf(
             LiaClassifiedIntentType.DIRECT_APP_LAUNCH,
             LiaClassifiedIntentType.SET_ALARM,
@@ -132,7 +129,6 @@ class AppActionExecutor : Service() {
             "virement",
             "transfère",
             "transfert bancaire",
-            "neobank",
             "iban",
             "paiement",
             "payer",
@@ -143,12 +139,26 @@ class AppActionExecutor : Service() {
             "factory reset"
         )
 
+        private val INTERNAL_SAFE_ACTION_PREFIXES = listOf(
+            "flashlight:",
+            "alarm:",
+            "timer:",
+            "settings:",
+            "camera:",
+            "media_play:",
+            "app_msg:",
+            "app_search:",
+            "calendar_insert:",
+            "share_text:",
+            "steam:"
+        )
+
         init {
             fastPathScope.launch {
                 for (queuedTask in fastPathQueue) {
                     val startMs = System.currentTimeMillis()
                     val ok = executeClassifiedIntentInternal(
-                        context = queuedTask.context,
+                        context = queuedTask.appContext,
                         spec = queuedTask.spec,
                         executedViaFastPathQueue = true,
                         safetyValidationSummary = queuedTask.safetyAuditSummary
@@ -169,17 +179,75 @@ class AppActionExecutor : Service() {
         }
 
         /**
+         * Porte de sécurité centrale vérifiée avant toute exécution d'Intent (Chat, Bulle flottante ou balise [ACTION]).
+         */
+        fun isExecutionPermittedByGlobalSecurity(
+            context: Context,
+            targetPackageOrUri: String,
+            userExplicitlyConfirmed: Boolean
+        ): Boolean {
+            SoniaSecurityKernel.initVaultState(context)
+            if (SoniaSecurityKernel.isVaultLockedRuntime) {
+                _fastPathMetrics.update {
+                    it.copy(
+                        totalSafetyBlocked = it.totalSafetyBlocked + 1,
+                        lastFastPathSummary = "🔒 Action bloquée : Coffre verrouillé par code PIN"
+                    )
+                }
+                return false
+            }
+
+            val policy = SoniaSecurityKernel.globalPolicyRuntime
+            if (policy == GlobalAccessPolicyMode.LOCKDOWN || policy == GlobalAccessPolicyMode.OBSERVATION_ONLY) {
+                _fastPathMetrics.update {
+                    it.copy(
+                        totalSafetyBlocked = it.totalSafetyBlocked + 1,
+                        lastFastPathSummary = "🛡️ Action bloquée par la politique ${policy.frenchTitle}"
+                    )
+                }
+                return false
+            }
+
+            val trimmed = targetPackageOrUri.trim()
+            val isInternalPrefix = INTERNAL_SAFE_ACTION_PREFIXES.any { trimmed.startsWith(it, ignoreCase = true) }
+            if (!isInternalPrefix) {
+                when (SoniaSecurityKernel.validateActionTargetSafety(trimmed)) {
+                    ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET -> {
+                        _fastPathMetrics.update {
+                            it.copy(
+                                totalSafetyBlocked = it.totalSafetyBlocked + 1,
+                                lastFastPathSummary = "🛡️ Cible d'action non sûre bloquée : ${trimmed.take(36)}"
+                            )
+                        }
+                        return false
+                    }
+                    ActionTargetSafetyVerdict.REQUIRES_USER_CONFIRMATION -> {
+                        if (!userExplicitlyConfirmed && policy == GlobalAccessPolicyMode.SELECTIVE_ZERO_TRUST) {
+                            _fastPathMetrics.update {
+                                it.copy(
+                                    totalHitlEscalated = it.totalHitlEscalated + 1,
+                                    lastFastPathSummary = "⚠️ Confirmation utilisateur requise pour : ${trimmed.take(36)}"
+                                )
+                            }
+                            return false
+                        }
+                    }
+                    ActionTargetSafetyVerdict.SAFE_APP_LAUNCH -> Unit
+                }
+            }
+
+            return true
+        }
+
+        /**
          * Vérifie si une commande utilisateur correspond à une tâche système de routine éligible
-         * à la file d'exécution Fast-Path (contournant la délibération LLM haute-latence) et applique
-         * la validation de sécurité Zero-Trust stricte avant l'exécution immédiate.
+         * à la file d'exécution Fast-Path et applique les 4 portes Zero-Trust.
          */
         fun tryDispatchRoutineTaskViaFastPathQueue(
             context: Context,
             rawUserCommand: String,
-            isVaultPinLocked: Boolean,
-            globalAccessPolicy: GlobalAccessPolicyMode,
-            activeAgentToken: ScopedAccessToken,
-            appPermissions: List<AppAccessPermission>
+            isVaultPinLocked: Boolean = SoniaSecurityKernel.isVaultLockedRuntime,
+            globalAccessPolicy: GlobalAccessPolicyMode = SoniaSecurityKernel.globalPolicyRuntime
         ): FastPathDispatchResult? {
             val cleaned = rawUserCommand.trim()
             if (cleaned.isBlank()) return null
@@ -187,17 +255,15 @@ class AppActionExecutor : Service() {
             val startTimeMs = System.currentTimeMillis()
             val taskId = "fp_${startTimeMs}"
 
-            // 1. Détection d'intention déterministe via IntentHandler
             val classifiedSpec = IntentHandler.classifyAndExtractKnownIntent(cleaned, context)
                 ?: return null
 
-            // Vérifie que l'intention fait partie des tâches système de routine autorisées en Fast-Path
             if (classifiedSpec.intentType !in ROUTINE_FAST_PATH_INTENT_TYPES) {
                 return null
             }
 
-            // 2. VALIDATION DE SÉCURITÉ STRICTE #1 : Verrouillage PIN du Coffre
-            if (isVaultPinLocked) {
+            // 1. Verrouillage PIN
+            if (isVaultPinLocked || SoniaSecurityKernel.isVaultLockedRuntime) {
                 _fastPathMetrics.update {
                     it.copy(
                         totalSafetyBlocked = it.totalSafetyBlocked + 1,
@@ -215,12 +281,12 @@ class AppActionExecutor : Service() {
                     resolvedActionLabel = classifiedSpec.resolvedAppLabel,
                     targetPackageOrUri = classifiedSpec.deepLinkUri.ifBlank { classifiedSpec.targetPackage },
                     queueLatencyMs = (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L),
-                    summaryMessageFr = "🔒 Exécution rapide bloquée : veuillez déverrouiller le code PIN dans Autorisations.",
+                    summaryMessageFr = "🔒 Exécution bloquée : veuillez déverrouiller votre code PIN dans Paramètres & Sécurité.",
                     blockingReasonFr = "Coffre verrouillé par code PIN"
                 )
             }
 
-            // 3. VALIDATION DE SÉCURITÉ STRICTE #2 : Inspection DLP & Pare-feu Anti-Injection
+            // 2. Inspection DLP & Anti-Injection
             val dlpScan = SoniaSecurityKernel.inspectAndSanitize(cleaned)
             if (!dlpScan.isSafe) {
                 _fastPathMetrics.update {
@@ -245,47 +311,11 @@ class AppActionExecutor : Service() {
                 )
             }
 
-            // 4. VALIDATION DE SÉCURITÉ STRICTE #3 : Escalade HITL obligatoire si l'opération est financière/destructrice
-            val lower = cleaned.lowercase()
-            val matchedAppPerm = appPermissions.find {
-                it.packageName.equals(classifiedSpec.targetPackage, ignoreCase = true) ||
-                    it.appName.equals(classifiedSpec.resolvedAppLabel, ignoreCase = true)
-            }
-            val containsSensitiveKeyword = SENSITIVE_OR_FINANCIAL_KEYWORDS.any { lower.contains(it) }
-            if (containsSensitiveKeyword || matchedAppPerm?.requireHitlForActions == true) {
-                _fastPathMetrics.update {
-                    it.copy(
-                        totalHitlEscalated = it.totalHitlEscalated + 1,
-                        lastFastPathSummary = "⚠️ Escalade HITL : Confirmation humaine requise pour ${classifiedSpec.resolvedAppLabel}"
-                    )
-                }
-                return FastPathDispatchResult(
-                    taskId = taskId,
-                    rawCommand = cleaned,
-                    executedViaFastPath = false,
-                    safetyValidated = true,
-                    dlpPassed = true,
-                    tokenScopePassed = true,
-                    hitlRequired = true,
-                    resolvedActionLabel = classifiedSpec.resolvedAppLabel,
-                    targetPackageOrUri = classifiedSpec.deepLinkUri.ifBlank { classifiedSpec.targetPackage },
-                    queueLatencyMs = (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L),
-                    summaryMessageFr = "⚠️ Opération sensible détectée : routage vers la validation humaine (HITL).",
-                    blockingReasonFr = "Confirmation humaine obligatoire (HITL)"
-                )
-            }
-
-            // 5. VALIDATION DE SÉCURITÉ STRICTE #4 : Politique Zero-Trust & Jetons Scopés
-            val isPackageBlockedByPerm = matchedAppPerm != null && !matchedAppPerm.canSeeScreen
+            // 3. Politique globale (LOCKDOWN / OBSERVATION_ONLY)
             if (globalAccessPolicy == GlobalAccessPolicyMode.LOCKDOWN ||
-                activeAgentToken.isRevoked ||
-                isPackageBlockedByPerm
+                globalAccessPolicy == GlobalAccessPolicyMode.OBSERVATION_ONLY
             ) {
-                val reason = when {
-                    globalAccessPolicy == GlobalAccessPolicyMode.LOCKDOWN -> "Coupe-circuit global LOCKDOWN actif"
-                    activeAgentToken.isRevoked -> "Jeton d'accès ${activeAgentToken.tokenId} révoqué"
-                    else -> "Application '${classifiedSpec.resolvedAppLabel}' verrouillée dans Autorisations"
-                }
+                val reason = "Mode ${globalAccessPolicy.frenchTitle} actif"
                 _fastPathMetrics.update {
                     it.copy(
                         totalSafetyBlocked = it.totalSafetyBlocked + 1,
@@ -308,12 +338,64 @@ class AppActionExecutor : Service() {
                 )
             }
 
-            // 6. Envoi dans la file d'exécution Fast-Path (sans attente de délibération LLM)
-            val safetySummary = "DLP OK • Jeton ${activeAgentToken.tokenId.take(14)} OK • Non-sensible"
+            // 4. Escalade HITL si mot-clé sensible ou si confirmation exigée dans les permissions MCP
+            val lower = cleaned.lowercase()
+            val containsSensitiveKeyword = SENSITIVE_OR_FINANCIAL_KEYWORDS.any { lower.contains(it) }
+            val mcpConnectors = LiaMcpConnectorRegistry.connectors.value
+            val matchingConnector = mcpConnectors.find {
+                it.packageName.equals(classifiedSpec.targetPackage, ignoreCase = true) ||
+                    it.appName.equals(classifiedSpec.resolvedAppLabel, ignoreCase = true)
+            }
+            if (matchingConnector != null && !matchingConnector.isEnabled) {
+                val reason = "Connecteur '${matchingConnector.appName}' désactivé dans Paramètres MCP"
+                return FastPathDispatchResult(
+                    taskId = taskId,
+                    rawCommand = cleaned,
+                    executedViaFastPath = false,
+                    safetyValidated = false,
+                    dlpPassed = true,
+                    tokenScopePassed = false,
+                    hitlRequired = false,
+                    resolvedActionLabel = classifiedSpec.resolvedAppLabel,
+                    targetPackageOrUri = classifiedSpec.deepLinkUri.ifBlank { classifiedSpec.targetPackage },
+                    queueLatencyMs = (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L),
+                    summaryMessageFr = "🛡️ $reason.",
+                    blockingReasonFr = reason
+                )
+            }
+
+            if (containsSensitiveKeyword ||
+                globalAccessPolicy == GlobalAccessPolicyMode.SELECTIVE_ZERO_TRUST &&
+                classifiedSpec.intentType == LiaClassifiedIntentType.DIAL_PHONE
+            ) {
+                _fastPathMetrics.update {
+                    it.copy(
+                        totalHitlEscalated = it.totalHitlEscalated + 1,
+                        lastFastPathSummary = "⚠️ Confirmation humaine requise pour ${classifiedSpec.resolvedAppLabel}"
+                    )
+                }
+                return FastPathDispatchResult(
+                    taskId = taskId,
+                    rawCommand = cleaned,
+                    executedViaFastPath = false,
+                    safetyValidated = true,
+                    dlpPassed = true,
+                    tokenScopePassed = true,
+                    hitlRequired = true,
+                    resolvedActionLabel = classifiedSpec.resolvedAppLabel,
+                    targetPackageOrUri = classifiedSpec.deepLinkUri.ifBlank { classifiedSpec.targetPackage },
+                    queueLatencyMs = (System.currentTimeMillis() - startTimeMs).coerceAtLeast(1L),
+                    summaryMessageFr = "⚠️ Opération sensible détectée : confirmation utilisateur requise.",
+                    blockingReasonFr = "Confirmation humaine obligatoire (HITL)"
+                )
+            }
+
+            // 5. Envoi dans la file d'exécution Fast-Path
+            val safetySummary = "DLP OK • MCP OK • Non-sensible"
             fastPathQueue.trySend(
                 FastPathQueuedTask(
                     taskId = taskId,
-                    context = context.applicationContext,
+                    appContext = context.applicationContext,
                     spec = classifiedSpec,
                     safetyAuditSummary = safetySummary
                 )
@@ -335,50 +417,55 @@ class AppActionExecutor : Service() {
             )
         }
 
-        /**
-         * Exécute immédiatement un `ClassifiedUserIntent` en résolvant le composant cible via
-         * `PackageManager` pour contourner les menus de sélection / confirmation intermédiaires.
-         */
         fun executeClassifiedIntent(
             context: Context,
             spec: ClassifiedUserIntent
         ): Boolean {
-            runCatching {
-                val serviceIntent = Intent(context, AppActionExecutor::class.java).apply {
-                    action = ACTION_EXECUTE_DIRECT_INTENT
-                    putExtra(EXTRA_TARGET_URI_OR_PKG, spec.deepLinkUri.ifBlank { spec.targetPackage })
-                    putExtra(EXTRA_APP_LABEL, spec.resolvedAppLabel)
-                    putExtra(EXTRA_RAW_COMMAND, spec.rawUserCommand)
-                }
-                context.startService(serviceIntent)
+            val target = spec.deepLinkUri.ifBlank { spec.targetPackage }
+            if (!isExecutionPermittedByGlobalSecurity(context, target, userExplicitlyConfirmed = true)) {
+                return false
             }
-            return executeClassifiedIntentInternal(context, spec)
+            return executeClassifiedIntentInternal(context.applicationContext, spec)
         }
 
         /**
-         * Point d'entrée universel appelé par `LiaMemoryAndHistoryStore.launchAppFast` et `OmniAgentViewModel`
-         * pour exécuter directement toute cible d'application ou URI d'action système via la file Fast-Path.
+         * Point d'entrée universel sécurisé pour exécuter toute cible d'application ou URI d'action système.
+         * Si [userExplicitlyConfirmed] vaut false (ex: auto-exécution issue d'une réponse IA), les cibles
+         * sensibles (`tel:`, `smsto:`, `mailto:`, `https://`) ne sont pas auto-lancées sans clic utilisateur.
          */
         fun executeTargetDirectly(
             context: Context,
             packageNameOrUri: String,
             appLabel: String = "",
-            rawCommand: String = ""
+            rawCommand: String = "",
+            userExplicitlyConfirmed: Boolean = true
         ): Boolean {
+            val trimmedTarget = packageNameOrUri.trim()
+            if (!isExecutionPermittedByGlobalSecurity(context, trimmedTarget, userExplicitlyConfirmed)) {
+                return false
+            }
+            if (!userExplicitlyConfirmed) {
+                val verdict = SoniaSecurityKernel.validateActionTargetSafety(trimmedTarget)
+                val isInternal = INTERNAL_SAFE_ACTION_PREFIXES.any { trimmedTarget.startsWith(it, ignoreCase = true) }
+                if (!isInternal && verdict != ActionTargetSafetyVerdict.SAFE_APP_LAUNCH) {
+                    return false
+                }
+            }
+            val appCtx = context.applicationContext
             val spec = IntentHandler.buildIntentSpecFromTarget(
-                appLabel = appLabel.ifBlank { packageNameOrUri },
-                packageNameOrUri = packageNameOrUri,
+                appLabel = appLabel.ifBlank { trimmedTarget },
+                packageNameOrUri = trimmedTarget,
                 rawCommand = rawCommand.ifBlank { appLabel },
-                context = context
+                context = appCtx
             )
-            return executeClassifiedIntentInternal(context, spec)
+            return executeClassifiedIntentInternal(appCtx, spec)
         }
 
         private fun executeClassifiedIntentInternal(
             context: Context,
             spec: ClassifiedUserIntent,
             executedViaFastPathQueue: Boolean = true,
-            safetyValidationSummary: String = "Zero-Trust DLP + Jeton SHA-256 validés"
+            safetyValidationSummary: String = "Zero-Trust DLP + Permissions MCP validés"
         ): Boolean {
             val pm = context.packageManager
             val uriOrPkg = spec.deepLinkUri.ifBlank { spec.targetPackage }.trim()
@@ -402,12 +489,14 @@ class AppActionExecutor : Service() {
                 recordExecutionLog(
                     spec = spec,
                     resolvedPackage = "android.hardware.camera2.torch",
-                    succeeded = torchOk
+                    succeeded = torchOk,
+                    executedViaFastPathQueue = executedViaFastPathQueue,
+                    safetyValidationSummary = safetyValidationSummary
                 )
                 return torchOk
             }
 
-            // 0A. Exécution directe de messagerie multi-applications (Messenger, WhatsApp, Telegram, Instagram, Discord, Keep)
+            // 0A. Messagerie multi-applications
             if (uriOrPkg.startsWith("app_msg:")) {
                 val payload = uriOrPkg.removePrefix("app_msg:")
                 val parts = payload.split(":", limit = 3)
@@ -425,12 +514,14 @@ class AppActionExecutor : Service() {
                 recordExecutionLog(
                     spec = spec,
                     resolvedPackage = channel.packageName,
-                    succeeded = ok
+                    succeeded = ok,
+                    executedViaFastPathQueue = executedViaFastPathQueue,
+                    safetyValidationSummary = safetyValidationSummary
                 )
                 return ok
             }
 
-            // 0B. Navigation autonome Steam (Bibliothèque / Dernier jeu joué)
+            // 0B. Steam
             if (uriOrPkg.startsWith("steam:")) {
                 val steamPkg = "com.valvesoftware.android.steam.community"
                 val ok = runCatching {
@@ -451,7 +542,9 @@ class AppActionExecutor : Service() {
                 recordExecutionLog(
                     spec = spec,
                     resolvedPackage = steamPkg,
-                    succeeded = ok
+                    succeeded = ok,
+                    executedViaFastPathQueue = executedViaFastPathQueue,
+                    safetyValidationSummary = safetyValidationSummary
                 )
                 return ok
             }
@@ -569,7 +662,6 @@ class AppActionExecutor : Service() {
                     }
 
                     LiaClassifiedIntentType.DEEP_APP_SEARCH -> {
-                        // Format: app_search:<package>:<encodedQuery>
                         val payload = uriOrPkg.removePrefix("app_search:")
                         val parts = payload.split(":", limit = 2)
                         val pkg = parts.getOrNull(0).orEmpty()
@@ -623,7 +715,7 @@ class AppActionExecutor : Service() {
                     }
 
                     LiaClassifiedIntentType.DIRECT_APP_LAUNCH -> {
-                        resolveDirectPackageLaunchIntent(context, pm, uriOrPkg, spec.resolvedAppLabel)
+                        resolveDirectPackageLaunchIntent(pm, uriOrPkg, spec.resolvedAppLabel)
                     }
                 }
 
@@ -644,11 +736,12 @@ class AppActionExecutor : Service() {
                     recordExecutionLog(
                         spec = spec,
                         resolvedPackage = resolvedPkg,
-                        succeeded = true
+                        succeeded = true,
+                        executedViaFastPathQueue = executedViaFastPathQueue,
+                        safetyValidationSummary = safetyValidationSummary
                     )
                     true
                 } else {
-                    // Fallback via le Hub universel (ex: Web URL ou recherche d'application par nom)
                     val fallbackOk = LiaUniversalAppsAndGoogleHub.launchGoogleOrUniversalTarget(
                         context,
                         uriOrPkg,
@@ -657,7 +750,9 @@ class AppActionExecutor : Service() {
                     recordExecutionLog(
                         spec = spec,
                         resolvedPackage = uriOrPkg,
-                        succeeded = fallbackOk
+                        succeeded = fallbackOk,
+                        executedViaFastPathQueue = executedViaFastPathQueue,
+                        safetyValidationSummary = safetyValidationSummary
                     )
                     fallbackOk
                 }
@@ -670,16 +765,14 @@ class AppActionExecutor : Service() {
                 recordExecutionLog(
                     spec = spec,
                     resolvedPackage = uriOrPkg,
-                    succeeded = fallbackOk
+                    succeeded = fallbackOk,
+                    executedViaFastPathQueue = executedViaFastPathQueue,
+                    safetyValidationSummary = safetyValidationSummary
                 )
                 fallbackOk
             }
         }
 
-        /**
-         * Utilise `PackageManager.queryIntentActivities` pour lier directement le package cible
-         * à l'Intent afin d'éviter la boîte de dialogue « Ouvrir avec… » d'Android.
-         */
         private fun bindBestPackageViaPackageManager(
             pm: PackageManager,
             intent: Intent,
@@ -707,16 +800,13 @@ class AppActionExecutor : Service() {
         }
 
         private fun resolveDirectPackageLaunchIntent(
-            context: Context,
             pm: PackageManager,
             packageOrQuery: String,
             appLabel: String
         ): Intent? {
-            // 1. Package direct via PackageManager.getLaunchIntentForPackage
             val directIntent = pm.getLaunchIntentForPackage(packageOrQuery)
             if (directIntent != null) return directIntent
 
-            // 2. Recherche par label / correspondance dans le catalogue d'applications installées
             val matchedInstalled = LiaUniversalAppsAndGoogleHub.findBestMatchingInstalledApp(
                 packageOrQuery.ifBlank { appLabel }
             )
@@ -733,7 +823,7 @@ class AppActionExecutor : Service() {
             resolvedPackage: String,
             succeeded: Boolean,
             executedViaFastPathQueue: Boolean = true,
-            safetyValidationSummary: String = "Zero-Trust DLP + Jeton SHA-256 validés"
+            safetyValidationSummary: String = "Zero-Trust DLP + Permissions MCP validés"
         ) {
             val record = AppActionExecutionRecord(
                 intentType = spec.intentType.code,

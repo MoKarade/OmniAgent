@@ -5,11 +5,13 @@ import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
 import com.example.BuildConfig
+import com.example.security.SoniaSecurityKernel
 import java.io.ByteArrayOutputStream
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,7 +29,19 @@ data class ApiKeyDiagnosticStatus(
     val activeSourceLabel: String
 )
 
+/**
+ * Client Gemini 2026 sécurisé :
+ * - Modèles officiels : `gemini-3.8-flash` (défaut rapide), `gemini-4-argon` (raisonnement approfondi),
+ *   `gemini-3.5-flash-lite` (ultra-basse latence), `gemini-embedding-2` (embeddings RAG en ligne).
+ * - Stockage chiffré AES-256-GCM de la clé API via `SoniaSecurityKernel`.
+ * - En-tête HTTP `x-goog-api-key` (jamais dans l'URL `?key=`) et backoff exponentiel sur erreurs transitoires.
+ */
 object GeminiDualEngineClient {
+
+    const val MODEL_FLASH_DEFAULT = "gemini-3.8-flash"
+    const val MODEL_PRO_REASONING = "gemini-4-argon"
+    const val MODEL_FLASH_LITE = "gemini-3.5-flash-lite"
+    const val MODEL_EMBEDDING = "gemini-embedding-2"
 
     @Volatile
     private var cachedCustomKey: String = ""
@@ -35,9 +49,26 @@ object GeminiDualEngineClient {
     @Volatile
     private var cachedFirebaseKey: String = ""
 
+    @Volatile
+    private var lastDiagnosticErrorMessage: String = ""
+
     fun init(context: Context) {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        cachedCustomKey = prefs.getString(KEY_CUSTOM_GEMINI_API_KEY, "")?.trim().orEmpty()
+        val rawStored = prefs.getString(KEY_CUSTOM_GEMINI_API_KEY, "")?.trim().orEmpty()
+        if (rawStored.isNotBlank()) {
+            val decrypted = SoniaSecurityKernel.decryptSensitivePayload(rawStored)?.trim().orEmpty()
+            cachedCustomKey = decrypted
+            // Migration transparente vers le format chiffré AES-256-GCM si la clé était en clair
+            if (!rawStored.startsWith("ENCv1:") && decrypted.isNotBlank()) {
+                val encrypted = SoniaSecurityKernel.encryptSensitivePayload(decrypted)
+                if (!encrypted.isNullOrBlank()) {
+                    prefs.edit().putString(KEY_CUSTOM_GEMINI_API_KEY, encrypted).apply()
+                }
+            }
+        } else {
+            cachedCustomKey = ""
+        }
+
         val resId = context.resources.getIdentifier("google_api_key", "string", context.packageName)
         if (resId != 0) {
             cachedFirebaseKey = context.getString(resId).trim()
@@ -47,9 +78,10 @@ object GeminiDualEngineClient {
     fun saveCustomApiKey(context: Context, apiKey: String) {
         val cleaned = apiKey.trim()
         cachedCustomKey = cleaned
+        val toStore = SoniaSecurityKernel.encryptSensitivePayload(cleaned) ?: cleaned
         context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit()
-            .putString(KEY_CUSTOM_GEMINI_API_KEY, cleaned)
+            .putString(KEY_CUSTOM_GEMINI_API_KEY, toStore)
             .apply()
     }
 
@@ -62,6 +94,8 @@ object GeminiDualEngineClient {
     }
 
     fun getCustomApiKey(): String = cachedCustomKey
+
+    fun getLastDiagnosticError(): String = lastDiagnosticErrorMessage
 
     fun hasValidCustomApiKey(): Boolean =
         cachedCustomKey.isNotBlank() && cachedCustomKey.startsWith("AIza")
@@ -97,10 +131,10 @@ object GeminiDualEngineClient {
         val validCustom = cachedCustomKey.isNotBlank()
 
         val activeSource = when {
-            validCustom -> "Clé API saisie dans l'application (${maskKey(cachedCustomKey)})"
+            validCustom -> "Clé API chiffrée AES-256-GCM (${maskKey(cachedCustomKey)})"
             validBuild -> "Panneau Secrets AI Studio (${maskKey(buildKey)})"
             cachedFirebaseKey.isNotBlank() -> "Firebase AI Logic (${maskKey(cachedFirebaseKey)})"
-            else -> "Moteur Hybride Rapide Sonia"
+            else -> "Mode Hors-Ligne Local LIA"
         }
 
         return ApiKeyDiagnosticStatus(
@@ -119,13 +153,15 @@ object GeminiDualEngineClient {
     }
 
     /**
-     * Ultra-fast REST call prioritizing low-latency Flash models with tight timeouts.
+     * Appel REST Gemini avec en-tête `x-goog-api-key`, cascade de modèles (`gemini-3.8-flash`,
+     * `gemini-4-argon`, `gemini-3.5-flash-lite`) et backoff exponentiel sur erreurs transitoires.
      */
     suspend fun generateJsonWithRestFallback(
-        primaryModel: String,
+        primaryModel: String = MODEL_FLASH_DEFAULT,
         systemInstruction: String?,
         prompt: String,
-        bitmap: Bitmap? = null
+        bitmap: Bitmap? = null,
+        responseMimeType: String = "application/json"
     ): String = withContext(Dispatchers.IO) {
         val candidateKeys = buildList {
             if (cachedCustomKey.isNotBlank()) add(cachedCustomKey)
@@ -139,14 +175,14 @@ object GeminiDualEngineClient {
         }
 
         if (candidateKeys.isEmpty()) {
-            throw IllegalStateException("Aucune clé API configurée.")
+            lastDiagnosticErrorMessage = "Aucune clé API Gemini configurée."
+            throw IllegalStateException(lastDiagnosticErrorMessage)
         }
 
-        // Prioritize ultra-fast Flash models first for < 2s latency
         val candidateModels = buildList {
-            add("gemini-3.8-flash")
-            if (!contains(primaryModel)) add(primaryModel)
-            if (!contains("gemini-3.5-flash-lite")) add("gemini-3.5-flash-lite")
+            if (primaryModel.isNotBlank()) add(primaryModel)
+            if (!contains(MODEL_FLASH_DEFAULT)) add(MODEL_FLASH_DEFAULT)
+            if (!contains(MODEL_FLASH_LITE)) add(MODEL_FLASH_LITE)
         }
 
         val base64Image = bitmap?.let { bmp ->
@@ -158,22 +194,28 @@ object GeminiDualEngineClient {
         var lastError: Exception? = null
 
         for (apiKey in candidateKeys) {
-            for (modelName in candidateModels) {
+            for ((attemptIndex, modelName) in candidateModels.withIndex()) {
+                if (attemptIndex > 0) {
+                    delay(220L * attemptIndex)
+                }
                 try {
                     val result = executeSingleHttpGenerateContent(
                         apiKey = apiKey,
                         modelName = modelName,
                         systemInstruction = systemInstruction,
                         prompt = prompt,
-                        base64Jpeg = base64Image
+                        base64Jpeg = base64Image,
+                        responseMimeType = responseMimeType
                     )
                     if (result.isNotBlank()) {
+                        lastDiagnosticErrorMessage = ""
                         return@withContext result
                     }
                 } catch (e: Exception) {
-                    Log.w(TAG, "Fast REST attempt failed for model=$modelName: ${e.message}")
+                    Log.w(TAG, "REST attempt failed for model=$modelName: ${e.message}")
                     lastError = e
                     val msg = e.message.orEmpty()
+                    lastDiagnosticErrorMessage = msg.take(180)
                     if (msg.contains("API_KEY_INVALID") ||
                         msg.contains("API key not valid") ||
                         msg.contains("API_KEY_ANDROID_APP_BLOCKED") ||
@@ -188,22 +230,92 @@ object GeminiDualEngineClient {
         throw lastError ?: IllegalStateException("Échec de l'appel Gemini REST.")
     }
 
+    /**
+     * Calcule un vecteur d'embedding sémantique en ligne via `gemini-embedding-2` (dim=64 tronqué et normalisé L2)
+     * pour enrichir le moteur RAG hybride lorsque la connexion est disponible.
+     */
+    suspend fun embedTextWithGeminiEmbedding2(
+        text: String,
+        targetDimensions: Int = 64
+    ): FloatArray? = withContext(Dispatchers.IO) {
+        val apiKey = resolveBestApiKey() ?: return@withContext null
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return@withContext null
+
+        val endpoint = "https://generativelanguage.googleapis.com/v1beta/models/$MODEL_EMBEDDING:embedContent"
+        val conn = (URL(endpoint).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 3_000
+            readTimeout = 4_000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("x-goog-api-key", apiKey)
+        }
+
+        val payload = JSONObject().apply {
+            put("model", "models/$MODEL_EMBEDDING")
+            put(
+                "content",
+                JSONObject().put(
+                    "parts",
+                    JSONArray().put(JSONObject().put("text", trimmed.take(1500)))
+                )
+            )
+            put("outputDimensionality", targetDimensions)
+        }
+
+        try {
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { writer ->
+                writer.write(payload.toString())
+                writer.flush()
+            }
+            if (conn.responseCode !in 200..299) {
+                return@withContext null
+            }
+            val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val valuesJson = JSONObject(body).optJSONObject("embedding")?.optJSONArray("values")
+                ?: return@withContext null
+            val dim = minOf(targetDimensions, valuesJson.length())
+            if (dim <= 0) return@withContext null
+            val vec = FloatArray(targetDimensions)
+            var normSq = 0f
+            for (i in 0 until dim) {
+                val v = valuesJson.optDouble(i, 0.0).toFloat()
+                vec[i] = v
+                normSq += v * v
+            }
+            val norm = kotlin.math.sqrt(normSq)
+            if (norm > 1e-6f) {
+                for (i in 0 until targetDimensions) {
+                    vec[i] /= norm
+                }
+            }
+            vec
+        } catch (_: Exception) {
+            null
+        } finally {
+            conn.disconnect()
+        }
+    }
+
     private fun executeSingleHttpGenerateContent(
         apiKey: String,
         modelName: String,
         systemInstruction: String?,
         prompt: String,
-        base64Jpeg: String?
+        base64Jpeg: String?,
+        responseMimeType: String
     ): String {
         val endpoint =
-            "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent?key=$apiKey"
+            "https://generativelanguage.googleapis.com/v1beta/models/$modelName:generateContent"
         val url = URL(endpoint)
         val conn = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "POST"
-            connectTimeout = 4_000
-            readTimeout = 6_000
+            connectTimeout = 5_000
+            readTimeout = 8_000
             doOutput = true
             setRequestProperty("Content-Type", "application/json; charset=utf-8")
+            setRequestProperty("x-goog-api-key", apiKey)
         }
 
         val payload = JSONObject().apply {
@@ -240,7 +352,7 @@ object GeminiDualEngineClient {
             put(
                 "generationConfig",
                 JSONObject()
-                    .put("responseMimeType", "application/json")
+                    .put("responseMimeType", responseMimeType)
                     .put("temperature", 0.15)
             )
         }

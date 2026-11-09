@@ -1,8 +1,7 @@
 <resources>
     <string name="app_name">LIA</string>
-    <string name="nav_console">Chat</string>
-    <string name="nav_app_access">Autorisations</string>
-    <string name="nav_agents_tasks">Agents</string>
+    <string name="nav_console">Chat LIA</string>
+    <string name="nav_settings">Paramètres</string>
     <string name="nav_mcp">Données</string>
     <string name="nav_security">Sécurité</string>
     <string name="header_subtitle">Assistant Personnel Visuel</string>

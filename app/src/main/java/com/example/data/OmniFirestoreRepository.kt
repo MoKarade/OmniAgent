@@ -105,7 +105,8 @@ class OmniFirestoreRepository(
             }
             .catch { e ->
                 if (e is CancellationException) throw e
-                handleFirestoreError(e, OperationType.LIST, path)
+                handleFirestoreError(e, OperationType.LIST, path, rethrow = false)
+                emit(emptyList())
             }
     }
 
@@ -121,7 +122,8 @@ class OmniFirestoreRepository(
             }
             .catch { e ->
                 if (e is CancellationException) throw e
-                handleFirestoreError(e, OperationType.LIST, path)
+                handleFirestoreError(e, OperationType.LIST, path, rethrow = false)
+                emit(emptyList())
             }
     }
 

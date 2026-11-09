@@ -219,7 +219,7 @@ fun LiaLiveThoughtAndRagDiagnosticCard(
                         liaMemory.activeMessages.lastOrNull { it.role == "user" }?.text
                             ?: "Dites ou écrivez simplement ce que vous souhaitez…"
                     },
-                    subDetailText = "Application active : ${uiState.currentScreen.appName}"
+                    subDetailText = "Contexte actif : LIA Assistant Android"
                 )
 
                 val latestLiaMsg = liaMemory.activeMessages.lastOrNull { it.role == "lia" }
@@ -519,8 +519,6 @@ private fun DiagnosticPipelineStepRow(
  */
 @Composable
 fun LiaFullScreenControlAndActionsDeck(
-    showPhoneScreenPreview: Boolean,
-    onTogglePhonePreview: () -> Unit,
     onExecuteCommand: (String) -> Unit,
     onClose: () -> Unit
 ) {
@@ -602,29 +600,16 @@ fun LiaFullScreenControlAndActionsDeck(
                     }
                 }
 
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                IconButton(
+                    onClick = onClose,
+                    modifier = Modifier.size(28.dp)
                 ) {
-                    GlassNeumorphicPill(
-                        text = if (showPhoneScreenPreview) "Masquer l'écran" else "Voir l'écran",
-                        emoji = "📱",
-                        selected = showPhoneScreenPreview,
-                        accentColor = GoogleBlue,
-                        onClick = onTogglePhonePreview,
-                        modifier = Modifier.testTag("deck_toggle_screen_preview_btn")
+                    Icon(
+                        imageVector = Icons.Default.Close,
+                        contentDescription = "Fermer",
+                        tint = GoogleTextSecondary,
+                        modifier = Modifier.size(16.dp)
                     )
-                    IconButton(
-                        onClick = onClose,
-                        modifier = Modifier.size(28.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Close,
-                            contentDescription = "Fermer",
-                            tint = GoogleTextSecondary,
-                            modifier = Modifier.size(16.dp)
-                        )
-                    }
                 }
             }
 

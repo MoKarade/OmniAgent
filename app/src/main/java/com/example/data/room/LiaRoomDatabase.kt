@@ -4,12 +4,15 @@ import android.content.Context
 import androidx.room.Dao
 import androidx.room.Database
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.PrimaryKey
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Entity(tableName = "lia_threads")
@@ -20,7 +23,12 @@ data class LiaThreadEntity(
     val updatedAtEpochMs: Long = System.currentTimeMillis()
 )
 
-@Entity(tableName = "lia_messages")
+@Entity(
+    tableName = "lia_messages",
+    indices = [
+        Index(value = ["threadId", "createdAtEpochMs"], name = "index_lia_messages_threadId_createdAtEpochMs")
+    ]
+)
 data class LiaMessageEntity(
     @PrimaryKey val id: String,
     val threadId: String,
@@ -76,7 +84,12 @@ data class LiaShortcutEntity(
  * - Frequently accessed app shortcuts (`category = "APP_SHORTCUT"`)
  * - Custom interaction patterns & macros (`category = "INTERACTION_PATTERN"`)
  */
-@Entity(tableName = "LongTermMemory")
+@Entity(
+    tableName = "LongTermMemory",
+    indices = [
+        Index(value = ["category", "updatedAtEpochMs"], name = "index_LongTermMemory_category_updatedAtEpochMs")
+    ]
+)
 data class LongTermMemoryEntity(
     @PrimaryKey val id: String,
     val category: String, // "PREFERENCE", "APP_SHORTCUT", "INTERACTION_PATTERN"
@@ -100,7 +113,13 @@ data class LongTermMemoryEntity(
  * Includes `embeddingVectorCsv` (normalized 64-dim vector) and `chunkText` (1000-char window)
  * so LIA can execute hybrid lexical + vector RAG before generating every response.
  */
-@Entity(tableName = "lia_souvenirs")
+@Entity(
+    tableName = "lia_souvenirs",
+    indices = [
+        Index(value = ["subjectKey"], name = "index_lia_souvenirs_subjectKey"),
+        Index(value = ["type", "updatedAtEpochMs"], name = "index_lia_souvenirs_type_updatedAtEpochMs")
+    ]
+)
 data class LiaSouvenirEntity(
     @PrimaryKey val id: String,
     val type: String, // "FAIT", "PREFERENCE", "EVENEMENT"
@@ -268,7 +287,7 @@ interface LiaRoomDao {
         LiaSouvenirEntity::class,
         LiaAppUsageEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class LiaRoomDatabase : RoomDatabase() {
@@ -278,6 +297,31 @@ abstract class LiaRoomDatabase : RoomDatabase() {
         @Volatile
         private var INSTANCE: LiaRoomDatabase? = null
 
+        /**
+         * Non-destructive migration from Room v5 to v6 adding SQLite performance indices
+         * on `lia_messages`, `LongTermMemory`, and `lia_souvenirs` (`PERF-04`).
+         */
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_lia_messages_threadId_createdAtEpochMs` " +
+                        "ON `lia_messages` (`threadId`, `createdAtEpochMs`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_LongTermMemory_category_updatedAtEpochMs` " +
+                        "ON `LongTermMemory` (`category`, `updatedAtEpochMs`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_lia_souvenirs_subjectKey` " +
+                        "ON `lia_souvenirs` (`subjectKey`)"
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_lia_souvenirs_type_updatedAtEpochMs` " +
+                        "ON `lia_souvenirs` (`type`, `updatedAtEpochMs`)"
+                )
+            }
+        }
+
         fun getInstance(context: Context): LiaRoomDatabase {
             return INSTANCE ?: synchronized(this) {
                 INSTANCE ?: Room.databaseBuilder(
@@ -285,6 +329,7 @@ abstract class LiaRoomDatabase : RoomDatabase() {
                     LiaRoomDatabase::class.java,
                     "lia_clean_database_v5.db"
                 )
+                    .addMigrations(MIGRATION_5_6)
                     .fallbackToDestructiveMigration(dropAllTables = true)
                     .build()
                     .also { INSTANCE = it }

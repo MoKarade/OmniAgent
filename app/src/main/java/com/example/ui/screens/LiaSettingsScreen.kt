@@ -41,14 +41,20 @@ import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.LockOpen
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -73,6 +79,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -80,6 +87,7 @@ import com.example.data.LiaAssistantBrain
 import com.example.data.LiaMemoryAndHistoryStore
 import com.example.model.GlobalAccessPolicyMode
 import com.example.model.McpCategory
+import com.example.model.SecurityPosture
 import com.example.service.LiaMcpConnectorRegistry
 import com.example.service.LiaReasoningDepthMode
 import com.example.service.LiaResponseToneStyle
@@ -119,12 +127,12 @@ enum class LiaSettingsSection(
         icon = Icons.Default.Extension,
         accentColor = GoogleBlue
     ),
-    DEBUG_LOGS(
-        id = "debug_logs",
-        titleFr = "Journaux",
-        subtitleFr = "Traces d'exécution, mémoire et diagnostics",
-        icon = Icons.Default.BugReport,
-        accentColor = GooglePurple
+    SECURITY_VAULT(
+        id = "security_vault",
+        titleFr = "Sécurité & PIN",
+        subtitleFr = "PIN PBKDF2, AndroidKeyStore AES-256-GCM & Pare-feu Zero-Trust",
+        icon = Icons.Default.Shield,
+        accentColor = ActionEmerald
     ),
     AI_PREFERENCES(
         id = "ai_preferences",
@@ -132,16 +140,24 @@ enum class LiaSettingsSection(
         subtitleFr = "Comportement, voix, mémoire et connexions",
         icon = Icons.Default.Tune,
         accentColor = GoogleGreen
+    ),
+    DEBUG_LOGS(
+        id = "debug_logs",
+        titleFr = "Journaux",
+        subtitleFr = "Traces d'exécution, mémoire et diagnostics",
+        icon = Icons.Default.BugReport,
+        accentColor = GooglePurple
     )
 }
 
 /**
- * Section 'Paramètres' isolée de l'interface principale.
+ * Section 'Paramètres & Sécurité' isolée de l'interface principale.
  * Accessible via une icône discrète dans la barre supérieure afin de préserver le design minimaliste
  * de la console de discussion tout en offrant un contrôle complet sur :
  * 1. Les permissions des connecteurs et outils dynamiques MCP (par application et par outil)
- * 2. Les journaux de débogage en temps réel (MCP, Fast-Path, RAG, Raisonnement IA, Sécurité)
- * 3. Les préférences de l'IA (niveau de réflexion, ton, voix TTS, mémoire continue, clé API et accès système)
+ * 2. Le coffre-fort de sécurité Zero-Trust (Code PIN PBKDF2-HMAC-SHA256, AndroidKeyStore AES-256-GCM, Politique globale et Chaîne d'audit SHA-256)
+ * 3. Les préférences de l'IA (niveau de réflexion Gemini 2026, ton, voix TTS, mémoire continue, clé API et bulle système)
+ * 4. Les journaux de débogage en temps réel (MCP, Fast-Path, RAG, Raisonnement IA, Sécurité)
  */
 @Composable
 fun LiaSettingsScreen(
@@ -153,9 +169,7 @@ fun LiaSettingsScreen(
     onOpenApiKeyDialog: () -> Unit,
     onOpenAuthScreen: () -> Unit,
     onSignOut: () -> Unit,
-    onTriggerSystemBubble: () -> Unit,
-    onOpenDetailedAppAccess: () -> Unit,
-    onOpenAgentFleet: () -> Unit
+    onTriggerSystemBubble: () -> Unit
 ) {
     val mcpState by LiaMcpConnectorRegistry.state.collectAsStateWithLifecycle()
     val liaMemory by LiaMemoryAndHistoryStore.state.collectAsStateWithLifecycle()
@@ -221,7 +235,7 @@ fun LiaSettingsScreen(
 
                         Column {
                             Text(
-                                text = "Paramètres & Contrôle",
+                                text = "Paramètres & Sécurité",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = GoogleTextPrimary
@@ -260,7 +274,9 @@ fun LiaSettingsScreen(
 
                 // Barre d'onglets interne Material 3 semi-transparente
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     LiaSettingsSection.entries.forEach { section ->
@@ -289,14 +305,13 @@ fun LiaSettingsScreen(
                             color = tabBg,
                             tonalElevation = if (selected) 4.dp else 0.dp,
                             modifier = Modifier
-                                .weight(1f)
                                 .clip(RoundedCornerShape(16.dp))
                                 .border(1.dp, tabBorder, RoundedCornerShape(16.dp))
                                 .clickable { activeSection = section }
                                 .testTag("settings_tab_${section.id}")
                         ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                                 horizontalArrangement = Arrangement.Center
                             ) {
@@ -350,6 +365,11 @@ fun LiaSettingsScreen(
                     confirmationRequiredToolIds = mcpState.confirmationRequiredToolIds
                 )
 
+                LiaSettingsSection.SECURITY_VAULT -> SecurityVaultSectionContent(
+                    uiState = uiState,
+                    viewModel = viewModel
+                )
+
                 LiaSettingsSection.DEBUG_LOGS -> DebugLogsSectionContent(
                     uiState = uiState,
                     mcpDebugLogs = mcpState.debugLogs,
@@ -367,9 +387,7 @@ fun LiaSettingsScreen(
                     onOpenApiKeyDialog = onOpenApiKeyDialog,
                     onOpenAuthScreen = onOpenAuthScreen,
                     onSignOut = onSignOut,
-                    onTriggerSystemBubble = onTriggerSystemBubble,
-                    onOpenDetailedAppAccess = onOpenDetailedAppAccess,
-                    onOpenAgentFleet = onOpenAgentFleet
+                    onTriggerSystemBubble = onTriggerSystemBubble
                 )
             }
         }
@@ -894,7 +912,7 @@ private fun DebugLogsSectionContent(
     val combinedLogs = remember(
         mcpDebugLogs,
         uiState.cognitiveHistory,
-        uiState.accessAuditLog,
+        uiState.auditBlockchain,
         uiState.lastFastPathDispatch,
         lastRagDiagnosticSummary
     ) {
@@ -931,17 +949,21 @@ private fun DebugLogsSectionContent(
             )
         }
 
-        uiState.accessAuditLog.take(25).forEach { audit ->
+        uiState.auditBlockchain.take(25).forEach { block ->
             list.add(
                 McpDebugLogEntry(
-                    id = "sec_${audit.id}",
-                    timestamp = audit.timestampFormatted,
+                    id = "sec_${block.index}_${block.currHash}",
+                    timestamp = block.timestamp,
                     category = "SÉCURITÉ",
-                    title = "${audit.agentName} → ${audit.appName}",
-                    detail = "${audit.operation} (${audit.reason})",
-                    toolOrPackageId = audit.packageName,
-                    latencyMs = 5L,
-                    level = if (audit.granted) McpDebugLogLevel.INFO else McpDebugLogLevel.WARNING
+                    title = "${block.actor} • ${block.operation}",
+                    detail = "${block.detail} (SHA-256 : ${block.currHash})",
+                    toolOrPackageId = "sonia.security.kernel",
+                    latencyMs = 2L,
+                    level = when (block.status) {
+                        SecurityPosture.NOMINAL -> McpDebugLogLevel.INFO
+                        SecurityPosture.ELEVATED_WARNING -> McpDebugLogLevel.WARNING
+                        SecurityPosture.BLOCKED -> McpDebugLogLevel.ERROR
+                    }
                 )
             )
         }
@@ -1243,6 +1265,436 @@ private fun DebugLogsSectionContent(
 }
 
 @Composable
+private fun SecurityVaultSectionContent(
+    uiState: OmniAgentUiState,
+    viewModel: OmniAgentViewModel
+) {
+    val context = LocalContext.current
+    var pinInput by rememberSaveable { mutableStateOf("") }
+    var pinFeedbackMessage by rememberSaveable { mutableStateOf<String?>(null) }
+    var pinFeedbackIsError by rememberSaveable { mutableStateOf(false) }
+
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .testTag("security_vault_section"),
+        contentPadding = PaddingValues(bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        // 1. Statut Matériel AndroidKeyStore AES-256-GCM & Pare-feu DLP Zero-Trust
+        item {
+            GlassNeumorphicCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 22.dp,
+                accentColor = ActionEmerald
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Shield,
+                                contentDescription = null,
+                                tint = ActionEmerald,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Column {
+                                Text(
+                                    text = "Noyau de Sécurité Zero-Trust",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = GoogleTextPrimary
+                                )
+                                Text(
+                                    text = "Chiffrement matériel des clés API / OAuth2 & pare-feu anti-injection",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = GoogleTextSecondary
+                                )
+                            }
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = if (uiState.isHardwareKeystoreActive) {
+                                GoogleGreenContainer.copy(alpha = 0.65f)
+                            } else {
+                                GoogleYellowContainer.copy(alpha = 0.65f)
+                            }
+                        ) {
+                            Text(
+                                text = if (uiState.isHardwareKeystoreActive) "AES-256-GCM Actif" else "Keystore Standard",
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (uiState.isHardwareKeystoreActive) GoogleGreen else GoogleYellow,
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
+                            )
+                        }
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        GlassNeumorphicPill(
+                            text = "Menaces DLP bloquées : ${uiState.dlpBlockedCount}",
+                            emoji = "🛡️",
+                            selected = uiState.dlpBlockedCount > 0,
+                            accentColor = GoogleBlue,
+                            onClick = {}
+                        )
+                        GlassNeumorphicPill(
+                            text = if (uiState.isVaultPinLocked) "Accès Verrouillé" else "Accès Déverrouillé",
+                            emoji = if (uiState.isVaultPinLocked) "🔒" else "🔓",
+                            selected = uiState.isVaultPinLocked,
+                            accentColor = if (uiState.isVaultPinLocked) GoogleRed else GoogleGreen,
+                            onClick = {}
+                        )
+                    }
+                }
+            }
+        }
+
+        // 2. Politique Globale d'Exécution (Autonome / Observation / Verrouillage Total)
+        item {
+            GlassNeumorphicCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 22.dp,
+                accentColor = GoogleBlue
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "Politique Globale d'Autorisation (Chat & Bulle Flottante)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = GoogleTextPrimary
+                    )
+                    Text(
+                        text = "S'applique immédiatement à la fenêtre principale et à la bulle flottante système.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GoogleTextSecondary
+                    )
+
+                    GlobalAccessPolicyMode.entries.forEach { mode ->
+                        val selected = uiState.globalAccessPolicy == mode
+                        val modeColor = when (mode) {
+                            GlobalAccessPolicyMode.FULL_AUTONOMOUS_ACCESS -> GoogleGreen
+                            GlobalAccessPolicyMode.OBSERVATION_ONLY -> GoogleYellow
+                            GlobalAccessPolicyMode.LOCKDOWN -> GoogleRed
+                        }
+
+                        Surface(
+                            shape = RoundedCornerShape(16.dp),
+                            color = if (selected) modeColor.copy(alpha = 0.18f) else Color(0xFF141822).copy(alpha = 0.65f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(16.dp))
+                                .border(
+                                    width = 1.dp,
+                                    color = if (selected) modeColor.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.10f),
+                                    shape = RoundedCornerShape(16.dp)
+                                )
+                                .clickable { viewModel.setGlobalAccessPolicy(mode) }
+                                .testTag("security_policy_${mode.name.lowercase()}")
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = mode.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (selected) modeColor else GoogleTextPrimary
+                                    )
+                                    Text(
+                                        text = mode.subtitle,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = GoogleTextSecondary
+                                    )
+                                }
+                                if (selected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = modeColor,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Verrouillage par Code PIN Personnel (PBKDF2-HMAC-SHA256 salé — jamais affiché en clair)
+        item {
+            GlassNeumorphicCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 22.dp,
+                accentColor = if (uiState.isVaultPinLocked) GoogleRed else GooglePurple
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (uiState.isVaultPinLocked) Icons.Default.Lock else Icons.Default.LockOpen,
+                            contentDescription = null,
+                            tint = if (uiState.isVaultPinLocked) GoogleRed else GooglePurple,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Column {
+                            Text(
+                                text = "Code PIN Personnel (PBKDF2-HMAC-SHA256)",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = GoogleTextPrimary
+                            )
+                            Text(
+                                text = when {
+                                    uiState.isVaultPinLocked -> "🔒 LIA est actuellement verrouillée. Entrez votre code PIN pour déverrouiller."
+                                    uiState.isUserPinConfigured -> "✓ Code PIN personnel configuré (hachage salé 12 000 itérations)."
+                                    else -> "Aucun code PIN défini. Créez un code PIN (4 à 12 caractères) pour protéger LIA."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = GoogleTextSecondary
+                            )
+                        }
+                    }
+
+                    OutlinedTextField(
+                        value = pinInput,
+                        onValueChange = {
+                            if (it.length <= 12) {
+                                pinInput = it
+                                pinFeedbackMessage = null
+                            }
+                        },
+                        placeholder = {
+                            Text(
+                                text = if (uiState.isVaultPinLocked) {
+                                    "Saisissez votre code PIN pour déverrouiller…"
+                                } else if (uiState.isUserPinConfigured) {
+                                    "Nouveau code PIN ou PIN actuel…"
+                                } else {
+                                    "Choisissez un code PIN (min. 4 chiffres)…"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = GoogleTextMuted
+                            )
+                        },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = GooglePurple.copy(alpha = 0.7f),
+                            unfocusedBorderColor = Color.White.copy(alpha = 0.14f),
+                            focusedContainerColor = Color(0xFF151922).copy(alpha = 0.72f),
+                            unfocusedContainerColor = Color(0xFF151922).copy(alpha = 0.52f),
+                            focusedTextColor = GoogleTextPrimary,
+                            unfocusedTextColor = GoogleTextPrimary
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("security_pin_input")
+                    )
+
+                    if (!pinFeedbackMessage.isNullOrBlank()) {
+                        Text(
+                            text = pinFeedbackMessage.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (pinFeedbackIsError) GoogleRed else GoogleGreen
+                        )
+                    }
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (uiState.isVaultPinLocked) {
+                            Button(
+                                onClick = {
+                                    val unlocked = viewModel.verifySecurityPin(context, pinInput)
+                                    if (unlocked) {
+                                        pinInput = ""
+                                        pinFeedbackIsError = false
+                                        pinFeedbackMessage = "✓ LIA déverrouillée avec succès."
+                                    } else {
+                                        pinFeedbackIsError = true
+                                        pinFeedbackMessage = "✕ Code PIN incorrect."
+                                    }
+                                },
+                                shape = RoundedCornerShape(50),
+                                colors = ButtonDefaults.buttonColors(containerColor = GoogleGreen),
+                                modifier = Modifier.testTag("security_unlock_pin_button")
+                            ) {
+                                Text("Déverrouiller LIA", color = Color.Black, fontWeight = FontWeight.Bold)
+                            }
+                        } else {
+                            Button(
+                                onClick = {
+                                    val ok = viewModel.configureOrUpdateUserPin(context, pinInput)
+                                    if (ok) {
+                                        pinInput = ""
+                                        pinFeedbackIsError = false
+                                        pinFeedbackMessage = "✓ Code PIN personnel enregistré (PBKDF2-HMAC-SHA256)."
+                                    } else {
+                                        pinFeedbackIsError = true
+                                        pinFeedbackMessage = "⚠️ Le code PIN doit contenir entre 4 et 12 caractères."
+                                    }
+                                },
+                                shape = RoundedCornerShape(50),
+                                colors = ButtonDefaults.buttonColors(containerColor = GoogleBlue),
+                                modifier = Modifier.testTag("security_save_pin_button")
+                            ) {
+                                Text(
+                                    text = if (uiState.isUserPinConfigured) "Modifier le PIN" else "Enregistrer le PIN",
+                                    color = Color.White,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            if (uiState.isUserPinConfigured) {
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.setVaultPinLocked(context, true)
+                                        pinInput = ""
+                                        pinFeedbackIsError = false
+                                        pinFeedbackMessage = "🔒 LIA est maintenant verrouillée."
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.testTag("security_lock_vault_button")
+                                ) {
+                                    Text("Verrouiller maintenant", color = GoogleYellow, fontWeight = FontWeight.SemiBold)
+                                }
+
+                                OutlinedButton(
+                                    onClick = {
+                                        viewModel.clearUserSecurityPin(context)
+                                        pinInput = ""
+                                        pinFeedbackIsError = false
+                                        pinFeedbackMessage = "Code PIN supprimé."
+                                    },
+                                    shape = RoundedCornerShape(50),
+                                    modifier = Modifier.testTag("security_clear_pin_button")
+                                ) {
+                                    Text("Supprimer PIN", color = GoogleRed, fontWeight = FontWeight.SemiBold)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. Chaîne d'Audit Cryptographique SHA-256 (Monotone & Thread-Safe)
+        item {
+            GlassNeumorphicCard(
+                modifier = Modifier.fillMaxWidth(),
+                cornerRadius = 22.dp,
+                accentColor = GooglePurple
+            ) {
+                Column(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Registre d'Audit SHA-256 (${uiState.auditBlockchain.size} blocs)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = GoogleTextPrimary
+                    )
+                    Text(
+                        text = "Chaque décision de sécurité, déverrouillage PIN ou exécution d'action est chaînée cryptographiquement.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = GoogleTextSecondary
+                    )
+
+                    uiState.auditBlockchain.take(8).forEach { block ->
+                        val statusColor = when (block.status) {
+                            SecurityPosture.NOMINAL -> GoogleGreen
+                            SecurityPosture.ELEVATED_WARNING -> GoogleYellow
+                            SecurityPosture.BLOCKED -> GoogleRed
+                        }
+                        Surface(
+                            shape = RoundedCornerShape(14.dp),
+                            color = Color(0xFF141822).copy(alpha = 0.72f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .border(1.dp, statusColor.copy(alpha = 0.35f), RoundedCornerShape(14.dp))
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(10.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "#${block.index} • ${block.actor} (${block.operation})",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = statusColor
+                                    )
+                                    Text(
+                                        text = block.timestamp,
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = GoogleTextMuted
+                                    )
+                                }
+                                Text(
+                                    text = block.detail,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = GoogleTextPrimary
+                                )
+                                Text(
+                                    text = "SHA-256 : ${block.prevHash} ➔ ${block.currHash}",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = GoogleTextMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AiPreferencesSectionContent(
     uiState: OmniAgentUiState,
     viewModel: OmniAgentViewModel,
@@ -1254,9 +1706,7 @@ private fun AiPreferencesSectionContent(
     onOpenApiKeyDialog: () -> Unit,
     onOpenAuthScreen: () -> Unit,
     onSignOut: () -> Unit,
-    onTriggerSystemBubble: () -> Unit,
-    onOpenDetailedAppAccess: () -> Unit,
-    onOpenAgentFleet: () -> Unit
+    onTriggerSystemBubble: () -> Unit
 ) {
     val context = LocalContext.current
 
@@ -1288,13 +1738,13 @@ private fun AiPreferencesSectionContent(
                         )
                         Column {
                             Text(
-                                text = "Calibrage Cognitif & Raisonnement",
+                                text = "Calibrage Cognitif & Raisonnement (Gemini 2026)",
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.Bold,
                                 color = GoogleTextPrimary
                             )
                             Text(
-                                text = "Définit la profondeur d'analyse et l'optimisation interne de LIA.",
+                                text = "Bascule entre Gemini 3.5 Flash-Lite, Gemini 3.8 Flash et Gemini 4 Argon.",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = GoogleTextSecondary
                             )
@@ -1499,7 +1949,7 @@ private fun AiPreferencesSectionContent(
             }
         }
 
-        // 4. Connexions, Clé API & Outils Système avancés (isolés ici pour garder l'accueil minimaliste)
+        // 4. Connexions, Clé API & Bulle Système
         item {
             GlassNeumorphicCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -1524,7 +1974,7 @@ private fun AiPreferencesSectionContent(
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
                         GlassNeumorphicPill(
-                            text = "Clé API Gemini",
+                            text = "Clé API Gemini (AES-256-GCM)",
                             emoji = "🔑",
                             selected = false,
                             accentColor = GoogleYellow,
@@ -1552,31 +2002,6 @@ private fun AiPreferencesSectionContent(
                             accentColor = GoogleBlue,
                             onClick = onTriggerSystemBubble,
                             modifier = Modifier.testTag("settings_floating_bubble_button")
-                        )
-                    }
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        GlassNeumorphicPill(
-                            text = "Permissions d'écran détaillées",
-                            emoji = "🛡️",
-                            selected = false,
-                            accentColor = GoogleBlue,
-                            onClick = onOpenDetailedAppAccess,
-                            modifier = Modifier.testTag("settings_open_app_access_button")
-                        )
-
-                        GlassNeumorphicPill(
-                            text = "Flotte d'agents & Tâches",
-                            emoji = "🤖",
-                            selected = false,
-                            accentColor = GooglePurple,
-                            onClick = onOpenAgentFleet,
-                            modifier = Modifier.testTag("settings_open_agent_fleet_button")
                         )
                     }
                 }

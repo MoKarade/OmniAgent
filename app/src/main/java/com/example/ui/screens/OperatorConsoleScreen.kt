@@ -106,26 +106,16 @@ import androidx.compose.ui.window.Dialog
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.data.LiaChatMessage
-import com.example.data.LiaConversationThread
 import com.example.data.LiaGoogleCloudWorkspaceClient
-import com.example.data.LiaLearnedShortcut
 import com.example.data.LiaMemoryAndHistoryStore
 import com.example.data.LiaUniversalAppsAndGoogleHub
-import com.example.data.LiaUserFact
-import com.example.model.AgentOperationalStatus
 import com.example.model.CognitivePipelineStage
 import com.example.model.CognitiveStepResult
-import com.example.model.FriendlyMissionSuggestion
-import com.example.model.MultiAgentDefaults
-import com.example.model.VirtualDeviceScreen
-import com.example.security.SoniaToolType
-import com.example.ui.components.LiaArchitectureBlueprintDialog
 import com.example.ui.components.LiaConversationHistoryDialog
 import com.example.ui.components.LiaPersonalDatabaseAndLearningDialog
 import com.example.ui.components.LiaSafeSmsConfirmationModal
 import com.example.ui.components.LiaUniversalAppsAndGoogleDialog
 import com.example.ui.components.PendingSafeSmsConfirmation
-import com.example.ui.components.SoniaArtifactCard
 import com.example.ui.theme.GoogleBackground
 import com.example.ui.theme.GoogleBlue
 import com.example.ui.theme.GoogleBlueContainer
@@ -150,29 +140,6 @@ import com.example.viewmodel.PendingHitlRequest
 import kotlinx.coroutines.launch
 import java.util.Locale
 
-private data class QuickVisualPrompt(
-    val emoji: String,
-    val shortTitle: String,
-    val suggestion: FriendlyMissionSuggestion?,
-    val toolType: SoniaToolType?,
-    val directPrompt: String? = null,
-    val accentColor: Color
-)
-
-private fun agentEmojiFor(agentId: String): String = when (agentId) {
-    "agent_alpha" -> "🤖"
-    "agent_beta" -> "💬"
-    "agent_gamma" -> "🏦"
-    else -> "✨"
-}
-
-private fun shortAgentName(name: String): String = when {
-    name.contains("Alpha", ignoreCase = true) -> "Alpha"
-    name.contains("Beta", ignoreCase = true) -> "Beta"
-    name.contains("Gamma", ignoreCase = true) -> "Gamma"
-    else -> name.take(10)
-}
-
 /**
  * Tab 1: Ultra-minimalist Dark Google / Gemini style Chat Window for LIA.
  * Syncs live with the outside floating bubble (`LiaMemoryAndHistoryStore`), preserves full multi-turn
@@ -182,7 +149,7 @@ private fun shortAgentName(name: String): String = when {
 fun OperatorConsoleScreen(
     uiState: OmniAgentUiState,
     viewModel: OmniAgentViewModel,
-    onOpenAccessPermissions: (String) -> Unit = {},
+    onOpenAccessPermissions: () -> Unit = {},
     onOpenGoogleSignIn: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -199,14 +166,12 @@ fun OperatorConsoleScreen(
     }
 
     var showPlusToolsTray by rememberSaveable { mutableStateOf(false) }
-    var showPhoneScreenPreview by rememberSaveable { mutableStateOf(false) }
     var showLiveDiagnosticView by rememberSaveable { mutableStateOf(false) }
     var showFullScreenControlDeck by rememberSaveable { mutableStateOf(false) }
     var showMcpConnectorsModal by rememberSaveable { mutableStateOf(false) }
     var showHistoryDialog by rememberSaveable { mutableStateOf(false) }
     var showMemoryDatabaseDialog by rememberSaveable { mutableStateOf(false) }
     var showUniversalGoogleAppsDialog by rememberSaveable { mutableStateOf(false) }
-    var showArchitectureBlueprintDialog by rememberSaveable { mutableStateOf(false) }
     var pendingSafeSmsModal by remember { mutableStateOf<PendingSafeSmsConfirmation?>(null) }
 
     // Hands-free SpeechRecognizer state (Commands + Voice Notes)
@@ -223,11 +188,10 @@ fun OperatorConsoleScreen(
     }
 
     val listState = rememberLazyListState()
-    val activeAgent = uiState.activeAgent
 
     // Auto-scroll when a new message arrives in the active conversation
     LaunchedEffect(liaMemory.activeMessages.size, uiState.isThinkingStep) {
-        val totalItems = liaMemory.activeMessages.size + uiState.artifacts.size + 1
+        val totalItems = liaMemory.activeMessages.size + 1
         if (totalItems > 1) {
             listState.animateScrollToItem((totalItems - 1).coerceAtLeast(0))
         }
@@ -272,23 +236,10 @@ fun OperatorConsoleScreen(
         }
     }
 
-    val primaryToolsList = remember {
-        listOf(
-            SoniaToolType.CREATE_CHART,
-            SoniaToolType.CREATE_CHECKLIST,
-            SoniaToolType.GENERATE_IMAGE,
-            SoniaToolType.CREATE_TABLE,
-            SoniaToolType.CREATE_TIMELINE,
-            SoniaToolType.CODE_CALCULATOR,
-            SoniaToolType.VOICE_TTS
-        )
-    }
-
     val isAnyModalActive = showMcpConnectorsModal ||
         showHistoryDialog ||
         showMemoryDatabaseDialog ||
         showUniversalGoogleAppsDialog ||
-        showArchitectureBlueprintDialog ||
         pendingSafeSmsModal != null
 
     val consoleBackgroundBlur by animateDpAsState(
@@ -303,20 +254,6 @@ fun OperatorConsoleScreen(
             .background(Color.Transparent)
             .blur(consoleBackgroundBlur)
     ) {
-        // 1. COLLAPSIBLE PHONE SCREEN PREVIEW (Hidden by default — fluid spring transition)
-        AnimatedVisibility(
-            visible = showPhoneScreenPreview,
-            enter = fadeIn() + expandVertically(animationSpec = spring(stiffness = Spring.StiffnessMediumLow)),
-            exit = fadeOut() + shrinkVertically()
-        ) {
-            VisualMiniPhonePreviewCard(
-                screen = uiState.currentScreen,
-                highlightedElementId = uiState.lastHighlightedElementId,
-                onSelectScreen = viewModel::selectScreenManually,
-                onTapElement = viewModel::triggerManualElementTap,
-                onClose = { showPhoneScreenPreview = false }
-            )
-        }
 
         // 2. GLASSMORPHIC / SOFT-NEUMORPHIC NATURAL LANGUAGE STREAM
         LazyColumn(
@@ -458,8 +395,6 @@ fun OperatorConsoleScreen(
                         exit = fadeOut() + shrinkVertically()
                     ) {
                         com.example.ui.components.LiaFullScreenControlAndActionsDeck(
-                            showPhoneScreenPreview = showPhoneScreenPreview,
-                            onTogglePhonePreview = { showPhoneScreenPreview = !showPhoneScreenPreview },
                             onExecuteCommand = { cmd ->
                                 viewModel.updateMissionText(cmd)
                                 viewModel.executeSingleCognitiveStep()
@@ -580,19 +515,7 @@ fun OperatorConsoleScreen(
                 }
             }
 
-            // B. Rich Interactive LIA Tool Artifacts (Charts, Checklists, AI Images, Tables, Timelines, Calculators)
-            items(
-                items = uiState.artifacts,
-                key = { it.id }
-            ) { artifact ->
-                SoniaArtifactCard(
-                    artifact = artifact,
-                    onToggleChecklistItem = viewModel::toggleChecklistItem,
-                    onDismissArtifact = viewModel::dismissArtifact
-                )
-            }
-
-            // C. Persistent Multi-Turn Conversation Messages (Synced live between Bubble & Main App!)
+            // B. Persistent Multi-Turn Conversation Messages (Synced live between Bubble & Main App!)
             items(
                 items = liaMemory.activeMessages,
                 key = { it.id }
@@ -624,25 +547,14 @@ fun OperatorConsoleScreen(
                 }
             }
 
-            // D. Optional Technical Phone Action Step Details (Only visible when user opens "Aperçu écran" in + menu)
-            if (showPhoneScreenPreview) {
-                val nonChatSteps = uiState.cognitiveHistory.filter { it.action.tool != "chat_reply" }
-                items(
-                    items = nonChatSteps,
-                    key = { "step_${it.stepIndex}" }
-                ) { step ->
-                    SoniaDarkChatBubble(step = step)
-                }
-            }
-
-            // E. Fast Live Indicator when LIA is acting
+            // C. Fast Live Indicator when LIA is acting
             if (uiState.isThinkingStep) {
                 item {
                     LiveVisualThinkingBubble(stage = uiState.liveTelemetry.stage)
                 }
             }
 
-            // F. Security Confirmation Bubble (HITL)
+            // D. Security Confirmation Bubble (HITL)
             val hitl = uiState.pendingHitlRequest
             if (hitl != null) {
                 item {
@@ -654,7 +566,7 @@ fun OperatorConsoleScreen(
                 }
             }
 
-            // G. Error / Security Alert Pill if any
+            // E. Error / Security Alert Pill if any
             if (uiState.errorMessage != null) {
                 item {
                     Surface(
@@ -720,102 +632,7 @@ fun OperatorConsoleScreen(
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    // Row 1: All LIA Specialized Creation Tools
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        primaryToolsList.forEach { tool ->
-                            val isAllowed = uiState.activeAgentAllowedTools.contains(tool)
-                            val isVoiceActive = tool == SoniaToolType.VOICE_TTS && uiState.isVoiceTtsEnabled
-                            Surface(
-                                shape = RoundedCornerShape(16.dp),
-                                color = when {
-                                    isVoiceActive -> GoogleGreenContainer
-                                    isAllowed -> GoogleSurfaceVariant
-                                    else -> GoogleRedContainer.copy(alpha = 0.4f)
-                                },
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(16.dp))
-                                    .clickable {
-                                        viewModel.executeSoniaTool(tool)
-                                        if (tool != SoniaToolType.VOICE_TTS) {
-                                            showPlusToolsTray = false
-                                        }
-                                    }
-                                    .testTag("plus_tool_${tool.name.lowercase()}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(text = tool.emoji, style = MaterialTheme.typography.bodyMedium)
-                                    Text(
-                                        text = tool.shortLabel,
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = if (isAllowed) GoogleTextPrimary else GoogleRed
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Row 2: Agent switcher pills
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        uiState.agents.forEach { agent ->
-                            val isSelected = agent.id == uiState.activeAgentId
-                            val statusColor = when (agent.status) {
-                                AgentOperationalStatus.IDLE,
-                                AgentOperationalStatus.COMPLETED -> GoogleGreen
-                                AgentOperationalStatus.OBSERVING,
-                                AgentOperationalStatus.THINKING -> GoogleYellow
-                                AgentOperationalStatus.EXECUTING -> GoogleBlue
-                                else -> GoogleRed
-                            }
-
-                            Surface(
-                                shape = RoundedCornerShape(50),
-                                color = if (isSelected) GoogleBlueContainer else GoogleSurfaceVariant,
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(50))
-                                    .clickable { viewModel.selectActiveAgent(agent.id) }
-                                    .testTag("chat_agent_pill_${agent.id}")
-                            ) {
-                                Row(
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(text = agentEmojiFor(agent.id), style = MaterialTheme.typography.bodySmall)
-                                    Text(
-                                        text = shortAgentName(agent.name),
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
-                                        color = if (isSelected) GoogleBlue else GoogleTextPrimary
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .size(6.dp)
-                                            .clip(CircleShape)
-                                            .background(statusColor)
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    // Row 3: Quick Options & Advanced Settings (tucked neatly inside the + drawer)
+                    // Quick Options & Voice / Security Settings
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -892,37 +709,6 @@ fun OperatorConsoleScreen(
                             )
                         }
 
-                        // Voir l'écran (Simulateur d'interactions)
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = if (showPhoneScreenPreview) GoogleBlueContainer else GoogleSurfaceVariant,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .clickable {
-                                    showPhoneScreenPreview = !showPhoneScreenPreview
-                                    showPlusToolsTray = false
-                                }
-                                .testTag("toggle_phone_preview_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Smartphone,
-                                    contentDescription = "Écran",
-                                    tint = GoogleBlue,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Text(
-                                    text = if (showPhoneScreenPreview) "Masquer l'aperçu" else "Aperçu écran",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = GoogleTextPrimary
-                                )
-                            }
-                        }
-
                         // Confidentialité & Sécurité
                         Surface(
                             shape = RoundedCornerShape(50),
@@ -931,7 +717,7 @@ fun OperatorConsoleScreen(
                                 .clip(RoundedCornerShape(50))
                                 .clickable {
                                     showPlusToolsTray = false
-                                    onOpenAccessPermissions(activeAgent.id)
+                                    onOpenAccessPermissions()
                                 }
                                 .testTag("chat_open_permissions_button")
                         ) {
@@ -947,40 +733,9 @@ fun OperatorConsoleScreen(
                                     modifier = Modifier.size(15.dp)
                                 )
                                 Text(
-                                    text = "Confidentialité",
+                                    text = "Confidentialité & PIN",
                                     style = MaterialTheme.typography.labelMedium,
                                     color = GoogleTextPrimary
-                                )
-                            }
-                        }
-
-                        // Architecture système (Avancé)
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = GoogleSurfaceVariant,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .clickable {
-                                    showPlusToolsTray = false
-                                    showArchitectureBlueprintDialog = true
-                                }
-                                .testTag("architecture_blueprint_button")
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp)
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.Bolt,
-                                    contentDescription = "Système",
-                                    tint = GoogleBlue,
-                                    modifier = Modifier.size(15.dp)
-                                )
-                                Text(
-                                    text = "Système avancé",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = GoogleTextSecondary
                                 )
                             }
                         }
@@ -1360,14 +1115,7 @@ fun OperatorConsoleScreen(
         )
     }
 
-    // 8. NEURO-SYMBOLIC ARCHITECTURE BLUEPRINT DIALOG (10 Sections from Engineering Spec)
-    if (showArchitectureBlueprintDialog) {
-        LiaArchitectureBlueprintDialog(
-            onDismiss = { showArchitectureBlueprintDialog = false }
-        )
-    }
-
-    // 9. UNIVERSAL GOOGLE WORKSPACE & ALL PHONE APPS DIALOG
+    // 8. UNIVERSAL GOOGLE WORKSPACE & ALL PHONE APPS DIALOG
     if (showUniversalGoogleAppsDialog) {
         LiaUniversalAppsAndGoogleDialog(
             hubState = universalHub,
@@ -1912,277 +1660,6 @@ private fun formatLiaRichMessage(raw: String): AnnotatedString {
                     i++
                 }
             }
-        }
-    }
-}
-
-
-
-@Composable
-private fun SoniaDarkChatBubble(
-    step: CognitiveStepResult
-) {
-    val isPureChatReply = step.action.tool == "chat_reply"
-    val isFinalStep = step.action.tool == "terminate" || isPureChatReply
-    var showDetails by rememberSaveable(step.stepIndex) { mutableStateOf(false) }
-    val targetBadge = step.action.elementId?.let { "#$it" } ?: "Écran"
-    val mainText = if (isFinalStep && step.action.summary.isNotBlank()) {
-        step.action.summary
-    } else {
-        step.subgoal
-    }
-
-    Card(
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(
-            containerColor = if (isFinalStep) GoogleSurfaceVariant else GoogleSurface
-        ),
-        modifier = Modifier
-            .fillMaxWidth()
-            .border(
-                width = 1.dp,
-                color = if (isFinalStep) GoogleBlue.copy(alpha = 0.4f) else GoogleBorderSubtle,
-                shape = RoundedCornerShape(22.dp)
-            )
-            .let { mod ->
-                if (isPureChatReply) mod else mod.clickable { showDetails = !showDetails }
-            }
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = if (isPureChatReply) Alignment.Top else Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    verticalAlignment = if (isPureChatReply) Alignment.Top else Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.weight(1f)
-                ) {
-                    if (isPureChatReply) {
-                        Text(
-                            text = "✨",
-                            style = MaterialTheme.typography.bodyMedium,
-                            modifier = Modifier.padding(top = 1.dp)
-                        )
-                    } else {
-                        Box(
-                            modifier = Modifier
-                                .size(8.dp)
-                                .clip(CircleShape)
-                                .background(if (isFinalStep) GoogleGreen else GoogleBlue)
-                        )
-                    }
-                    Text(
-                        text = mainText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = if (isPureChatReply) FontWeight.Normal else if (isFinalStep) FontWeight.SemiBold else FontWeight.Medium,
-                        color = GoogleTextPrimary,
-                        maxLines = if (isPureChatReply || isFinalStep || showDetails) Int.MAX_VALUE else 3,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-
-                if (!isPureChatReply) {
-                    Icon(
-                        imageVector = if (showDetails) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                        contentDescription = "Détails",
-                        tint = GoogleTextMuted,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-
-            // Hidden behind click (only for phone actions): Visual Flow + Observation / Thought / Action
-            if (!isPureChatReply) {
-                AnimatedVisibility(visible = showDetails) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(GoogleBackground)
-                            .padding(10.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            VisualFlowPill(Icons.Default.Visibility, targetBadge, GoogleBlue, GoogleBlueContainer)
-                            Text("➔", style = MaterialTheme.typography.labelSmall, color = GoogleTextMuted)
-                            VisualFlowPill(Icons.Default.Psychology, "LIA", GoogleYellow, GoogleYellowContainer)
-                            Text("➔", style = MaterialTheme.typography.labelSmall, color = GoogleTextMuted)
-                            VisualFlowPill(Icons.Default.TouchApp, step.action.tool, GoogleGreen, GoogleGreenContainer)
-                        }
-                        Text(
-                            text = "👁️ ${step.observation}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = GoogleTextSecondary
-                        )
-                        Text(
-                            text = "🧠 ${step.thought}",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = GoogleTextSecondary
-                        )
-                        Text(
-                            text = "⚡ ${step.action.toFormattedCall()}",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = GoogleBlue
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VisualMiniPhonePreviewCard(
-    screen: VirtualDeviceScreen,
-    highlightedElementId: Int?,
-    onSelectScreen: (String) -> Unit,
-    onTapElement: (com.example.model.SomElement) -> Unit,
-    onClose: () -> Unit
-) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-        shape = RoundedCornerShape(22.dp),
-        colors = CardDefaults.cardColors(containerColor = GoogleSurface)
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    val screens = listOf(
-                        "home_launcher" to "🏠 Accueil",
-                        "messages_inbox" to "💬 SMS",
-                        "neobank_transfer" to "🏦 Banque",
-                        "notes_editor" to "📝 Notes",
-                        "settings_vpn" to "🛡️ VPN"
-                    )
-                    screens.forEach { (id, label) ->
-                        val selected = screen.screenId == id
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = if (selected) GoogleBlueContainer else GoogleSurfaceVariant,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .clickable { onSelectScreen(id) }
-                        ) {
-                            Text(
-                                text = label,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                                color = if (selected) GoogleBlue else GoogleTextSecondary,
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp)
-                            )
-                        }
-                    }
-                }
-
-                IconButton(
-                    onClick = onClose,
-                    modifier = Modifier.size(28.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Fermer",
-                        tint = GoogleTextSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                screen.elements.forEach { el ->
-                    val isHighlighted = el.id == highlightedElementId
-                    Surface(
-                        shape = RoundedCornerShape(14.dp),
-                        color = if (isHighlighted) GoogleGreenContainer else GoogleSurfaceVariant,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(14.dp))
-                            .clickable { onTapElement(el) }
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            Text(
-                                text = "#${el.id}",
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = if (isHighlighted) GoogleGreen else GoogleBlue
-                            )
-                            Text(
-                                text = el.label.take(18),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = GoogleTextPrimary,
-                                maxLines = 1
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun VisualFlowPill(
-    icon: ImageVector,
-    label: String,
-    color: Color,
-    container: Color
-) {
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = container
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(12.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = color,
-                maxLines = 1
-            )
         }
     }
 }

@@ -1,5 +1,6 @@
 package com.example.data
 
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -28,8 +29,10 @@ data class RagRetrievalOutcome(
  * 1. Découpe et vectorise localement la requête de l'utilisateur en un vecteur dense normalisé (64 dimensions)
  *    combinant des ancres sémantiques personnelles (âge, préférences, famille, ville, métier, événements)
  *    et des trigrammes de caractères.
- * 2. Interroge les vecteurs et métadonnées stockés dans la table Room `lia_souvenirs` (ainsi que `lia_user_facts`).
- * 3. Calcule un score hybride (Similarité Cosinus Vectorielle + Score Lexical BM25 + Synonymes Français).
+ * 2. Maintient un cache mémoire `ConcurrentHashMap` des vecteurs `FloatArray` désérialisés (`PERF-01b`)
+ *    afin d'éviter tout `split(',')` répétitif à chaque requête.
+ * 3. Calcule un score hybride (Similarité Cosinus Vectorielle + Score Lexical BM25 + Synonymes Français
+ *    + enrichissement optionnel `gemini-embedding-2`).
  * 4. Injecte les souvenirs pertinents sous forme de contexte structuré et de triplets Mem0 (`Sujet ➔ Prédicat ➔ Objet`)
  *    dans le prompt de LIA, et fournit une réponse directe haute-précision lorsqu'une question personnelle
  *    cible un souvenir stocké.
@@ -38,6 +41,22 @@ object LiaSouvenirRagEngine {
 
     private const val EMBEDDING_DIM = 64
     private const val CHUNK_WINDOW_CHARS = 1000
+
+    private data class CachedVectorEntry(
+        val sourceHash: Int,
+        val vector: FloatArray
+    )
+
+    // PERF-01b: Thread-safe in-memory cache of parsed/computed 64D embeddings keyed by souvenir ID
+    private val localVectorCache = ConcurrentHashMap<String, CachedVectorEntry>()
+
+    // Optional online embedding cache for gemini-embedding-2 vectors keyed by normalized text hash
+    private val onlineEmbeddingCache = ConcurrentHashMap<Int, FloatArray>()
+
+    fun clearVectorCache() {
+        localVectorCache.clear()
+        onlineEmbeddingCache.clear()
+    }
 
     private val FRENCH_STOP_WORDS = setOf(
         "le", "la", "les", "un", "une", "des", "du", "de", "d", "et", "ou", "mais",
@@ -163,6 +182,40 @@ object LiaSouvenirRagEngine {
         return out
     }
 
+    /**
+     * Returns the cached 64D embedding for a [LiaSouvenirItem], parsing or computing it only when
+     * the item's CSV/text hash changes (`PERF-01b`).
+     */
+    private fun getOrComputeCachedEmbedding(item: LiaSouvenirItem, docText: String): FloatArray {
+        val sourceKey = item.embeddingVectorCsv.ifBlank { docText }
+        val sourceHash = sourceKey.hashCode()
+        val cached = localVectorCache[item.id]
+        if (cached != null && cached.sourceHash == sourceHash) {
+            return cached.vector
+        }
+        val computed = if (item.embeddingVectorCsv.isNotBlank()) {
+            parseEmbeddingCsv(item.embeddingVectorCsv)
+        } else {
+            computeLocalEmbedding(docText)
+        }
+        localVectorCache[item.id] = CachedVectorEntry(sourceHash, computed)
+        return computed
+    }
+
+    /**
+     * Fetches or retrieves from cache an online `gemini-embedding-2` vector when a custom API key
+     * is configured. Returns `null` immediately when offline or unconfigured.
+     */
+    suspend fun getOnlineGeminiEmbeddingIfAvailable(text: String): FloatArray? {
+        if (!GeminiDualEngineClient.hasValidCustomApiKey()) return null
+        val norm = normalizeText(text)
+        if (norm.isBlank()) return null
+        val key = norm.hashCode()
+        onlineEmbeddingCache[key]?.let { return it }
+        return GeminiDualEngineClient.embedTextWithGeminiEmbedding2(text, outputDimensionality = 256)
+            ?.also { onlineEmbeddingCache[key] = it }
+    }
+
     fun cosineSimilarity(a: FloatArray, b: FloatArray): Float {
         var dot = 0f
         var normA = 0f
@@ -215,16 +268,26 @@ object LiaSouvenirRagEngine {
                 }
                 if (!alreadyInSouvenirs) {
                     val chunk = buildChunkText("FAIT", fact.key, fact.label, fact.value, fact.key, "")
+                    val factId = "fact_rag_${fact.key}"
+                    val cachedEntry = localVectorCache[factId]
+                    val chunkHash = chunk.hashCode()
+                    val vec = if (cachedEntry != null && cachedEntry.sourceHash == chunkHash) {
+                        cachedEntry.vector
+                    } else {
+                        computeLocalEmbedding(chunk).also {
+                            localVectorCache[factId] = CachedVectorEntry(chunkHash, it)
+                        }
+                    }
                     add(
                         LiaSouvenirItem(
-                            id = "fact_rag_${fact.key}",
+                            id = factId,
                             type = if (fact.key.endsWith("_tel")) "CONTACT" else "FAIT",
                             subjectKey = fact.key,
                             title = fact.label,
                             detailValue = fact.value,
                             searchTags = "${fact.key},${fact.label.lowercase()}",
                             createdAt = fact.updatedAt,
-                            embeddingVectorCsv = serializeEmbeddingCsv(computeLocalEmbedding(chunk)),
+                            embeddingVectorCsv = serializeEmbeddingCsv(vec),
                             chunkText = chunk
                         )
                     )
@@ -248,11 +311,7 @@ object LiaSouvenirRagEngine {
             val docText = item.chunkText.ifBlank {
                 buildChunkText(item.type, item.subjectKey, item.title, item.detailValue, item.searchTags, item.eventDateOrTime)
             }
-            val docVec = if (item.embeddingVectorCsv.isNotBlank()) {
-                parseEmbeddingCsv(item.embeddingVectorCsv)
-            } else {
-                computeLocalEmbedding(docText)
-            }
+            val docVec = getOrComputeCachedEmbedding(item, docText)
 
             val cosSim = cosineSimilarity(queryVec, docVec)
             val normDoc = normalizeText("$docText ${item.subjectKey} ${item.title} ${item.detailValue} ${item.searchTags}")
