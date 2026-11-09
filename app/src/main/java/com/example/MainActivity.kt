@@ -106,16 +106,21 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Capture any unexpected thread exceptions to logcat for clear debugging
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            android.util.Log.e("OmniAgentCrash", "FATAL crash on thread ${thread.name}", throwable)
+        }
+
         // STEP 1: Mandatory Firebase App Check initialization with launch intent before UI or ViewModels
-        configureAppCheck(this, intent)
+        runCatching { configureAppCheck(this, intent) }
 
         // STEP 2: Initialize Dual-Engine Gemini API Key Client, LIA Persistent Memory Store, Google Cloud Workspace Client, Dynamic App Monitor & Usage Service
-        GeminiDualEngineClient.init(this)
-        LiaMemoryAndHistoryStore.init(this)
-        com.example.data.LiaGoogleCloudWorkspaceClient.init(this)
-        com.example.data.LiaUniversalAppsAndGoogleHub.initAndRegisterDynamicPackageMonitor(this)
-        com.example.service.LiaMcpConnectorRegistry.refreshConnectors(this)
-        com.example.service.LiaAppUsageTrackerService.startTracking(this)
+        runCatching { GeminiDualEngineClient.init(this) }
+        runCatching { LiaMemoryAndHistoryStore.init(this) }
+        runCatching { com.example.data.LiaGoogleCloudWorkspaceClient.init(this) }
+        runCatching { com.example.data.LiaUniversalAppsAndGoogleHub.initAndRegisterDynamicPackageMonitor(this) }
+        runCatching { com.example.service.LiaMcpConnectorRegistry.refreshConnectors(this) }
+        runCatching { com.example.service.LiaAppUsageTrackerService.startTracking(this) }
 
         // STEP 3: Enable Edge-to-Edge and render UI
         enableEdgeToEdge()
@@ -134,23 +139,23 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         // Hide the system-wide overlay while inside the app so only the in-app bubble is shown
-        com.example.service.SoniaOverlayBubbleService.hideOverlay(this)
-        com.example.data.LiaUniversalAppsAndGoogleHub.refreshAllInstalledPhoneApps(this)
-        com.example.service.LiaMcpConnectorRegistry.refreshConnectors(this)
-        com.example.service.LiaAppUsageTrackerService.startTracking(this)
+        runCatching { com.example.service.SoniaOverlayBubbleService.hideOverlay(this) }
+        runCatching { com.example.data.LiaUniversalAppsAndGoogleHub.refreshAllInstalledPhoneApps(this) }
+        runCatching { com.example.service.LiaMcpConnectorRegistry.refreshConnectors(this) }
+        runCatching { com.example.service.LiaAppUsageTrackerService.startTracking(this) }
     }
 
     override fun onUserLeaveHint() {
         super.onUserLeaveHint()
         if (com.example.service.SoniaOverlayBubbleService.canDrawOverlays(this)) {
-            com.example.service.SoniaOverlayBubbleService.startSideBubble(this)
+            runCatching { com.example.service.SoniaOverlayBubbleService.startSideBubble(this) }
         }
     }
 
     override fun onStop() {
         super.onStop()
         if (com.example.service.SoniaOverlayBubbleService.canDrawOverlays(this)) {
-            com.example.service.SoniaOverlayBubbleService.startSideBubble(this)
+            runCatching { com.example.service.SoniaOverlayBubbleService.startSideBubble(this) }
         }
     }
 }
@@ -158,29 +163,32 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun OmniRootAuthHost() {
     val context = LocalContext.current
-    val auth = remember { FirebaseAuth.getInstance() }
-    var currentUser by remember { mutableStateOf<FirebaseUser?>(auth.currentUser) }
+    val auth = remember { runCatching { FirebaseAuth.getInstance() }.getOrNull() }
+    var currentUser by remember { mutableStateOf<FirebaseUser?>(auth?.currentUser) }
     var showAuthModal by rememberSaveable { mutableStateOf(false) }
     var showApiKeyDialog by rememberSaveable { mutableStateOf(false) }
 
     DisposableEffect(auth) {
+        val currentAuth = auth ?: return@DisposableEffect onDispose {}
         val listener = FirebaseAuth.AuthStateListener { firebaseAuth ->
             currentUser = firebaseAuth.currentUser
         }
-        auth.addAuthStateListener(listener)
+        currentAuth.addAuthStateListener(listener)
         onDispose {
-            auth.removeAuthStateListener(listener)
+            currentAuth.removeAuthStateListener(listener)
         }
     }
 
     val firestoreRepository = remember(context) {
-        val databaseId = runCatching { context.getString(R.string.firestore_database_id) }.getOrNull().orEmpty().trim()
-        val firestore = if (databaseId.isNotBlank() && databaseId != "(default)") {
-            runCatching { FirebaseFirestore.getInstance(databaseId) }.getOrElse { FirebaseFirestore.getInstance() }
-        } else {
-            FirebaseFirestore.getInstance()
-        }
-        OmniFirestoreRepository(firestore)
+        runCatching {
+            val databaseId = runCatching { context.getString(R.string.firestore_database_id) }.getOrNull().orEmpty().trim()
+            val firestore = if (databaseId.isNotBlank() && databaseId != "(default)") {
+                runCatching { FirebaseFirestore.getInstance(databaseId) }.getOrElse { FirebaseFirestore.getInstance() }
+            } else {
+                FirebaseFirestore.getInstance()
+            }
+            OmniFirestoreRepository(firestore)
+        }.getOrNull()
     }
 
     val agentViewModel: OmniAgentViewModel = viewModel(
@@ -214,7 +222,7 @@ fun OmniRootAuthHost() {
     if (showAuthModal) {
         AuthScreen(
             onSignInSuccess = {
-                currentUser = auth.currentUser
+                currentUser = auth?.currentUser
                 showAuthModal = false
             },
             onContinueLocalSession = {
@@ -228,7 +236,7 @@ fun OmniRootAuthHost() {
             onOpenApiKeyDialog = { showApiKeyDialog = true },
             onOpenAuthScreen = { showAuthModal = true },
             onSignOut = {
-                auth.signOut()
+                runCatching { auth?.signOut() }
                 currentUser = null
             }
         )
