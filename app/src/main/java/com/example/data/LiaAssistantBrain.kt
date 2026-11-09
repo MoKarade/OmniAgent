@@ -1940,33 +1940,49 @@ object LiaAssistantBrain {
     }
 
     private fun extractMessageBodyFromPrompt(input: String, recipient: String): String? {
+        val cleanCandidate: (String) -> String? = { raw ->
+            val t = raw.trim().removeSurrounding("\"").removeSurrounding("«", "»").trim()
+            val lower = t.lowercase()
+            if (t.isNotBlank() &&
+                !lower.contains("ouvrir la conv") &&
+                !lower.contains("m'ouvrir la conv") &&
+                !lower.contains("ouvrir la discussion") &&
+                !lower.contains("pour que je l'envoie") &&
+                !lower.contains("pour que je lenvoie") &&
+                !lower.startsWith("et de m'ouvrir") &&
+                !lower.startsWith("et m'ouvrir")
+            ) {
+                t.replaceFirstChar { ch -> ch.uppercase() }
+            } else {
+                null
+            }
+        }
+
         if (input.contains(":")) {
-            val afterColon = input.substringAfter(":").trim().removeSurrounding("\"").removeSurrounding("«", "»")
-            if (afterColon.isNotBlank()) return afterColon
+            val afterColon = input.substringAfter(":")
+            val res = cleanCandidate(afterColon)
+            if (res != null) return res
         }
         val quoteRegex = Regex("[«\"](.+?)[»\"]")
         quoteRegex.find(input)?.let {
-            return it.groupValues[1].trim()
+            val res = cleanCandidate(it.groupValues[1])
+            if (res != null) return res
         }
         val direRegex = Regex(
-            "(?:pour\\s+lui\\s+dire\\s+que|pour\\s+dire\\s+que|en\\s+disant\\s+que|dis-lui\\s+que|dis\\s+lui\\s+que|pour\\s+lui\\s+dire|pour\\s+dire)\\s+(.+)",
+            "(?:pour\\s+lui\\s+dire\\s+que|pour\\s+dire\\s+que|en\\s+disant\\s+que|dis-lui\\s+que|dis\\s+lui\\s+que|disant\\s+que|disant|pour\\s+lui\\s+dire|pour\\s+dire|avec\\s+le\\s+message|comme\\s+message|en\\s+[ée]crivant\\s+que|en\\s+[ée]crivant)\\s+(.+)",
             RegexOption.IGNORE_CASE
         )
         direRegex.find(input)?.let {
-            val extracted = it.groupValues[1].trim()
-            if (extracted.isNotBlank()) {
-                return extracted.replaceFirstChar { ch -> ch.uppercase() }
-            }
+            val res = cleanCandidate(it.groupValues[1])
+            if (res != null) return res
         }
         val queRegex = Regex(
             "(?:maman|papa|${Regex.escape(recipient)})\\s+que\\s+(.+)",
             RegexOption.IGNORE_CASE
         )
         queRegex.find(input)?.let {
-            val extracted = it.groupValues[1].trim()
-            if (extracted.isNotBlank()) {
-                return extracted.replaceFirstChar { ch -> ch.uppercase() }
-            }
+            val res = cleanCandidate(it.groupValues[1])
+            if (res != null) return res
         }
         return null
     }
@@ -2412,17 +2428,22 @@ object LiaAssistantBrain {
         }
 
         // 3. Google Maps / Itinéraire : Si aucune destination n'est précisée, on demande où aller !
-        if (lower.contains("itinéraire") ||
+        val isMapsIntent = lower.contains("itinéraire") ||
             lower.contains("itineraire") ||
-            lower == "navigation" ||
-            lower == "lancer la navigation" ||
-            lower == "ouvrir google maps" ||
-            lower == "ouvrir maps" ||
-            (lower.contains("maps") && (lower.contains("vers ") || lower.contains("cherche ")))
-        ) {
+            lower.contains("navigation") ||
+            lower.contains("maps") ||
+            lower.contains("carte") ||
+            lower.startsWith("va à ") ||
+            lower.startsWith("aller à ") ||
+            lower.startsWith("emmène-moi") ||
+            lower.startsWith("emmene-moi") ||
+            lower.startsWith("guide-moi") ||
+            lower.startsWith("où se trouve") ||
+            lower.startsWith("ou se trouve")
+        if (isMapsIntent) {
             val destination = input
-                .replace(Regex("^(?:itinéraire(?:\\s+vers)?|itineraire(?:\\s+vers)?|navigation(?:\\s+vers)?|ouvrir\\s+(?:google\\s+)?maps|cherche|trouve|va vers|google maps vers)\\s*", RegexOption.IGNORE_CASE), "")
-                .replace(Regex("\\s+sur\\s+(?:google\\s+)?maps.*$", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("^(?:faire\\s+une\\s+recherche\\s+(?:dans|sur)\\s+(?:google\\s+)?maps(?:\\s+et\\s+lancer)?|recherche(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|cherche(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|trouve(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|ouvre(?:r)?\\s+(?:google\\s+)?maps(?:\\s+et\\s+cherche(?:r)?)?|itin[ée]raire(?:\\s+vers)?|navigation(?:\\s+vers)?|lancer\\s+la\\s+navigation|ouvrir\\s+(?:google\\s+)?maps|va\\s+[àa]|aller\\s+[àa]|navigate\\s+to|emm[èe]ne-moi\\s+[àa]?|guide-moi\\s+vers|o[ùu]\\s+se\\s+trouve|maps)\\s*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+(?:dans|sur)\\s+(?:google\\s+)?maps.*$", RegexOption.IGNORE_CASE), "")
                 .trim()
 
             if (destination.isBlank()) {
@@ -2432,12 +2453,16 @@ object LiaAssistantBrain {
                 LiaMemoryAndHistoryStore.setPendingFollowUp(
                     LiaPendingFollowUp.WaitingForGeneralClarification("ASK_MAPS_DESTINATION")
                 )
+                val action = LiaAppLaunchAction("Google Maps", "geo:0,0?q=", "home_launcher", 45L)
                 return LiaBrainTurnOutcome(
-                    replyText = "🗺️ **Quelle destination souhaitez-vous chercher sur Google Maps ?**$hint",
+                    replyText = "🗺️ **Que souhaitez-vous rechercher ou où voulez-vous aller sur Google Maps ?**$hint\n\n*(J'ouvre l'application Maps ci-dessous, vous pouvez aussi choisir une destination)*",
+                    appLaunchAction = action,
+                    isPhoneAction = true,
                     learnedBadge = "🗺️ Destination attendue",
                     quickReplies = buildList {
                         if (!lastDest.isNullOrBlank()) add(lastDest)
                         if (!userCity.isNullOrBlank() && userCity !in this) add("Gare de $userCity")
+                        add("Restaurants à proximité")
                         add("Pharmacie la plus proche")
                         add("Supermarché à proximité")
                         add("Station-service")
@@ -2456,13 +2481,13 @@ object LiaAssistantBrain {
             val action = LiaAppLaunchAction("Google Maps ($destination)", geoUri, "home_launcher", 45L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "🗺️ Maps : ${destination.take(16)}",
-                actionTitle = "Itinéraire Google Maps vers $destination",
+                actionTitle = "Recherche Google Maps : $destination",
                 targetPackageOrScreen = geoUri,
                 stepsSaved = 3,
                 latencyMs = 45L
             )
             return LiaBrainTurnOutcome(
-                replyText = "🗺️ Je lance l'itinéraire **Google Maps** vers **« $destination »**.",
+                replyText = "🗺️ Je lance la recherche **Google Maps** pour **« $destination »**.",
                 appLaunchAction = action,
                 isPhoneAction = true,
                 learnedBadge = "🗺️ Google Maps : $destination"
@@ -2992,23 +3017,119 @@ object LiaAssistantBrain {
         val nameGreeting = if (!userName.isNullOrBlank()) " $userName" else ""
         val userAge = LiaMemoryAndHistoryStore.getUserFactValue("age")
 
+        // 1. Math et calculs arithmétiques
+        val mathRegex = Regex("(?:calcule|combien fait|combien font|calcul|résous)?\\s*([0-9]+(?:[.,][0-9]+)?)\\s*([+\\-*xX/÷])\\s*([0-9]+(?:[.,][0-9]+)?)")
+        mathRegex.find(userPrompt)?.let { m ->
+            val a = m.groupValues[1].replace(",", ".").toDoubleOrNull()
+            val op = m.groupValues[2]
+            val b = m.groupValues[3].replace(",", ".").toDoubleOrNull()
+            if (a != null && b != null) {
+                val res = when (op) {
+                    "+", "plus" -> a + b
+                    "-", "moins" -> a - b
+                    "*", "x", "X" -> a * b
+                    "/", "÷" -> if (b != 0.0) a / b else Double.NaN
+                    else -> null
+                }
+                if (res != null) {
+                    val formatted = if (res % 1.0 == 0.0) res.toLong().toString() else "%.2f".format(res)
+                    return "🧮 Le résultat de **$a $op $b** est **$formatted**."
+                }
+            }
+        }
+
+        // Pourcentage
+        val pctRegex = Regex("(?:calcule\\s+)?([0-9]+(?:[.,][0-9]+)?)\\s*%\\s*(?:de|d'|sur)\\s*([0-9]+(?:[.,][0-9]+)?)", RegexOption.IGNORE_CASE)
+        pctRegex.find(userPrompt)?.let { m ->
+            val pct = m.groupValues[1].replace(",", ".").toDoubleOrNull()
+            val total = m.groupValues[2].replace(",", ".").toDoubleOrNull()
+            if (pct != null && total != null) {
+                val res = (pct / 100.0) * total
+                val formatted = if (res % 1.0 == 0.0) res.toLong().toString() else "%.2f".format(res)
+                return "🧮 **$pct%** de **$total** est égal à **$formatted**."
+            }
+        }
+
+        // 2. Traductions courantes
+        if (q.contains("traduis") || q.contains("comment on dit") || q.contains("comment dire")) {
+            val isEnglish = q.contains("anglais") || q.contains("english")
+            val isSpanish = q.contains("espagnol") || q.contains("spanish")
+            val isGerman = q.contains("allemand")
+            val isItalian = q.contains("italien")
+            val isJapanese = q.contains("japonais")
+
+            when {
+                (q.contains("bonjour") || q.contains("salut")) && isEnglish -> return "🌐 En anglais, « bonjour » se dit **« Hello »** ou **« Good morning »**."
+                (q.contains("bonjour") || q.contains("salut")) && isSpanish -> return "🌐 En espagnol, « bonjour » se dit **« ¡Hola! »** ou **« Buenos días »**."
+                (q.contains("bonjour") || q.contains("salut")) && isGerman -> return "🌐 En allemand, « bonjour » se dit **« Hallo »** ou **« Guten Tag »**."
+                (q.contains("bonjour") || q.contains("salut")) && isItalian -> return "🌐 En italien, « bonjour » se dit **« Ciao »** ou **« Buongiorno »**."
+                (q.contains("bonjour") || q.contains("salut")) && isJapanese -> return "🌐 En japonais, « bonjour » se dit **« Konnichiwa » (こんにちは)**."
+                q.contains("merci") && isEnglish -> return "🌐 En anglais, « merci » se dit **« Thank you »**."
+                q.contains("merci") && isSpanish -> return "🌐 En espagnol, « merci » se dit **« Gracias »**."
+                q.contains("merci") && isGerman -> return "🌐 En allemand, « merci » se dit **« Danke »**."
+                q.contains("merci") && isItalian -> return "🌐 En italien, « merci » se dit **« Grazie »**."
+                q.contains("merci") && isJapanese -> return "🌐 En japonais, « merci » se dit **« Arigato » (ありがとう)**."
+                q.contains("au revoir") && isEnglish -> return "🌐 En anglais, « au revoir » se dit **« Goodbye »**."
+                q.contains("je t'aime") && isEnglish -> return "🌐 En anglais, « je t'aime » se dit **« I love you »**."
+            }
+        }
+
+        // 3. Capitales et Géographie
+        if (q.contains("capitale")) {
+            when {
+                q.contains("france") -> return "La capitale de la France est **Paris**."
+                q.contains("japon") -> return "La capitale du Japon est **Tokyo**."
+                q.contains("italie") -> return "La capitale de l'Italie est **Rome**."
+                q.contains("espagne") -> return "La capitale de l'Espagne est **Madrid**."
+                q.contains("allemagne") -> return "La capitale de l'Allemagne est **Berlin**."
+                q.contains("royaume-uni") || q.contains("angleterre") || q.contains("londres") -> return "La capitale du Royaume-Uni est **Londres**."
+                q.contains("états-unis") || q.contains("etats-unis") || q.contains("usa") -> return "La capitale des États-Unis est **Washington D.C.**."
+                q.contains("canada") -> return "La capitale du Canada est **Ottawa**."
+                q.contains("maroc") -> return "La capitale du Maroc est **Rabat**."
+                q.contains("algérie") || q.contains("algerie") -> return "La capitale de l'Algérie est **Alger**."
+                q.contains("tunisie") -> return "La capitale de la Tunisie est **Tunis**."
+                q.contains("portugal") -> return "La capitale du Portugal est **Lisbonne**."
+                q.contains("belgique") -> return "La capitale de la Belgique est **Bruxelles**."
+                q.contains("suisse") -> return "La capitale (ville fédérale) de la Suisse est **Berne**."
+                q.contains("brésil") || q.contains("bresil") -> return "La capitale du Brésil est **Brasília**."
+                q.contains("chine") -> return "La capitale de la Chine est **Pékin (Beijing)**."
+                q.contains("russie") -> return "La capitale de la Russie est **Moscou**."
+                q.contains("australie") -> return "La capitale de l'Australie est **Canberra**."
+            }
+        }
+
+        // 4. Culture et Sciences
+        if (q.contains("vitesse de la lumière") || q.contains("vitesse lumiere")) {
+            return "⚡ La vitesse de la lumière dans le vide est d'environ **299 792 458 mètres par seconde**, soit près de **300 000 km/s**."
+        }
+        if (q.contains("distance") && (q.contains("terre") || q.contains("lune"))) {
+            return "🌕 La distance moyenne entre la Terre et la Lune est d'environ **384 400 kilomètres**."
+        }
+        if (q.contains("joconde") || q.contains("mona lisa")) {
+            return "🎨 La Joconde (ou Mona Lisa) a été peinte par **Léonard de Vinci** entre 1503 et 1506 et est exposée au musée du Louvre à Paris."
+        }
+
         return when {
             q.contains("peu importe") || q.contains("comme tu veux") || q.contains("n'importe") ->
                 "Très bien$nameGreeting ! Que souhaitez-vous que je fasse maintenant ?"
             q.startsWith("salut") || q.startsWith("bonjour") || q.startsWith("hello") || q.startsWith("coucou") || q.contains("comment ça va") ->
-                "Bonjour$nameGreeting ! Je suis **LIA**, votre assistante personnelle. Je peux appeler vos contacts, envoyer vos messages sur WhatsApp, Messenger ou par SMS, ouvrir vos applications, retrouver vos infos (Agenda, Keep, Drive, Steam), régler vos minuteurs/réveils, contrôler la lampe torche ou calculer et traduire instantanément${if (userAge != null) " (âge mémorisé : $userAge)" else ""}."
+                "Bonjour$nameGreeting ! Je suis **LIA**, votre assistante personnelle. Je peux préparer vos messages dans Messenger, WhatsApp, Telegram ou SMS avec le texte pré-rempli, lancer un itinéraire ou une recherche dans Google Maps, régler vos réveils et minuteurs, allumer la lampe torche, ouvrir vos applications et répondre à toutes vos questions${if (userAge != null) " (âge mémorisé : $userAge)" else ""}."
             q.contains("qui es-tu") || q.contains("tu fais quoi") || q.contains("que sais-tu faire") ->
-                "Je suis **LIA**, votre assistante personnelle sur Android. Je lance vos applications, navigue automatiquement (comme dans Steam), passe vos appels, envoie vos messages sur Messenger, WhatsApp ou par SMS, retrouve vos numéros, notes Keep, événements Agenda et fichiers Drive, et contrôle vos réglages."
+                "Je suis **LIA**, votre assistante personnelle complète sur Android :\n" +
+                    "• 💬 **Messagerie instantanée** : J'écris vos messages dans Messenger, WhatsApp, Telegram, Instagram ou par SMS et je vous ouvre la discussion avec le texte prêt à envoyer.\n" +
+                    "• 🗺️ **Google Maps & Navigation** : Je cherche des lieux, adresses ou itinéraires et lance directement le trajet.\n" +
+                    "• 📱 **Contrôle du téléphone** : Lampe torche, réveil, minuteur, appareil photo, musique, réglages système et navigation d'écran.\n" +
+                    "• 🧠 **Intelligence & Connaissances** : Calculs, traductions, culture générale, explications et mémorisation de vos souvenirs personnels."
             q.contains("blague") ->
                 "Pourquoi les oiseaux volent-ils vers le sud en hiver ? Parce que c'est trop long d'y aller à pied !"
-            q.contains("capitale") && q.contains("france") -> "La capitale de la France est Paris."
-            q.contains("capitale") && q.contains("japon") -> "La capitale du Japon est Tokyo."
-            q.contains("capitale") && q.contains("italie") -> "La capitale de l'Italie est Rome."
-            q.contains("capitale") && q.contains("espagne") -> "La capitale de l'Espagne est Madrid."
             q.contains("heure") || q.contains("date") -> "Il est actuellement ${currentTimeFormatted()}."
             q.contains("merci") -> "Avec plaisir$nameGreeting ! Je reste disponible ici ou via la bulle flottante à tout moment."
             else ->
-                "📡 *[Mode local hors-ligne]* Je vous écoute$nameGreeting ! Vous pouvez me demander une action locale (ex: *« Envoyer un message »*, *« Appeler »*, *« Mettre un minuteur »*, *« Calcule 20% de 150€ »*) ou configurer votre clé API Gemini dans **Paramètres → Clé API Gemini** pour les réponses IA complètes."
+                "Je suis à votre écoute$nameGreeting ! Vous pouvez me demander par exemple :\n" +
+                    "• *« Écris un message dans Messenger : J'arrive dans 10 minutes »*\n" +
+                    "• *« Recherche une boulangerie dans Google Maps »*\n" +
+                    "• *« Mets un réveil à 7h30 »* ou *« Allume la lampe torche »*\n" +
+                    "• *« Calcule 25% de 80€ »* ou toute question de connaissance."
         }
     }
 }

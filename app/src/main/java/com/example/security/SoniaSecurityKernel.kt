@@ -413,15 +413,32 @@ object SoniaSecurityKernel {
             return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
         }
 
+        val safePrefixes = listOf(
+            "geo:",
+            "google.navigation:",
+            "app_msg:",
+            "flashlight:",
+            "alarm:",
+            "timer:",
+            "settings:",
+            "camera:",
+            "media_play:",
+            "app_search:",
+            "calendar_insert:",
+            "share_text:",
+            "steam:"
+        )
+        if (safePrefixes.any { lower.startsWith(it) }) {
+            return ActionTargetSafetyVerdict.SAFE_APP_LAUNCH
+        }
+
         val confirmationPrefixes = listOf(
             "tel:",
             "smsto:",
             "sms:",
             "mailto:",
             "https://",
-            "http://",
-            "geo:",
-            "google.navigation:"
+            "http://"
         )
         if (confirmationPrefixes.any { lower.startsWith(it) }) {
             return ActionTargetSafetyVerdict.REQUIRES_USER_CONFIRMATION

@@ -118,6 +118,7 @@ class AppActionExecutor : Service() {
             LiaClassifiedIntentType.OPEN_SYSTEM_SETTINGS,
             LiaClassifiedIntentType.PLAY_MEDIA,
             LiaClassifiedIntentType.MAPS_NAVIGATION,
+            LiaClassifiedIntentType.SEND_MESSAGE,
             LiaClassifiedIntentType.YOUTUBE_DEEP_LINK,
             LiaClassifiedIntentType.WEB_SEARCH_DEEP_LINK,
             LiaClassifiedIntentType.PLAY_STORE_SEARCH,
@@ -150,7 +151,9 @@ class AppActionExecutor : Service() {
             "app_search:",
             "calendar_insert:",
             "share_text:",
-            "steam:"
+            "steam:",
+            "geo:",
+            "google.navigation:"
         )
 
         init {

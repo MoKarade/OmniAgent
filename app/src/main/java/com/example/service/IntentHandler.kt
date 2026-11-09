@@ -23,6 +23,7 @@ enum class LiaClassifiedIntentType(val code: String, val labelFr: String) {
     SET_ALARM("SET_ALARM", "Programmation Réveil"),
     SET_TIMER("SET_TIMER", "Minuteur Système"),
     MAPS_NAVIGATION("MAPS_NAVIGATION", "Navigation & Itinéraire"),
+    SEND_MESSAGE("SEND_MESSAGE", "Message & Discussion"),
     ADD_CALENDAR_EVENT("ADD_CALENDAR_EVENT", "Événement Agenda"),
     OPEN_SYSTEM_SETTINGS("OPEN_SYSTEM_SETTINGS", "Réglages Système"),
     PLAY_MEDIA("PLAY_MEDIA", "Lecture Multimédia"),
@@ -582,44 +583,104 @@ object IntentHandler {
             }
         }
 
-        // 6. MAPS_NAVIGATION (avec destination explicite) : "itinéraire vers Lyon", "navigate to Paris"
-        if (lower.startsWith("itinéraire vers ") ||
-            lower.startsWith("itineraire vers ") ||
-            lower.startsWith("navigation vers ") ||
+        // 5B. SEND_MESSAGE (Messagerie multi-applications : Messenger, WhatsApp, Telegram, Instagram, SMS, Discord)
+        val detectedChannel = LiaCrossAppKnowledgeResolver.detectMessagingChannel(trimmed)
+        val isMessageIntent = lower.contains("message") || lower.contains("écris") || lower.contains("ecris") ||
+            lower.contains("envoie") || lower.contains("envoyer") || lower.contains("conv") ||
+            lower.contains("conversation") || lower.contains("discussion")
+        if (detectedChannel != null && isMessageIntent) {
+            val channel = detectedChannel
+            val recRegex = Regex(
+                "(?:à|a|au|pour|avec)\\s+(?:ma\\s+|mon\\s+)?([A-Za-zÀ-ÿ0-9+]+?)(?:\\s+sur\\s+|\\s+dans\\s+|\\s*:\\s*|\\s+que\\s+|\\s+disant\\s+|\\s+avec\\s+|$)",
+                RegexOption.IGNORE_CASE
+            )
+            val rawRecipient = recRegex.find(trimmed)?.groupValues?.getOrNull(1)?.trim()
+                ?.takeIf {
+                    it.lowercase() !in setOf(
+                        "messenger", "whatsapp", "telegram", "instagram", "discord", "signal", "keep",
+                        "message", "conversation", "discussion", "un", "une", "le", "la", "lui", "dire"
+                    )
+                }.orEmpty()
+
+            val msgBody = when {
+                trimmed.contains(":") -> trimmed.substringAfter(":").trim().removeSurrounding("\"").removeSurrounding("«", "»")
+                Regex("[«\"](.+?)[»\"]").find(trimmed) != null -> Regex("[«\"](.+?)[»\"]").find(trimmed)!!.groupValues[1].trim()
+                Regex("(?:disant\\s+que|disant|en\\s+disant\\s+que|pour\\s+dire\\s+que|pour\\s+lui\\s+dire|avec\\s+le\\s+message|comme\\s+message)\\s+(.+)", RegexOption.IGNORE_CASE).find(trimmed) != null -> {
+                    Regex("(?:disant\\s+que|disant|en\\s+disant\\s+que|pour\\s+dire\\s+que|pour\\s+lui\\s+dire|avec\\s+le\\s+message|comme\\s+message)\\s+(.+)", RegexOption.IGNORE_CASE).find(trimmed)!!.groupValues[1].trim()
+                }
+                else -> ""
+            }
+
+            val encodedRec = Uri.encode(rawRecipient)
+            val encodedMsg = Uri.encode(msgBody)
+            val appMsgUri = "app_msg:${channel.id}:$encodedRec:$encodedMsg"
+            val targetLabel = if (rawRecipient.isNotBlank()) "${channel.displayName} ($rawRecipient)" else channel.displayName
+            val summary = if (msgBody.isNotBlank()) {
+                "${channel.emoji} J'ouvre **${channel.displayName}**${if (rawRecipient.isNotBlank()) " pour **$rawRecipient**" else ""} avec votre message :\n« *$msgBody* »"
+            } else {
+                "${channel.emoji} J'ouvre **${channel.displayName}**${if (rawRecipient.isNotBlank()) " avec **$rawRecipient**" else ""}."
+            }
+            val classified = ClassifiedUserIntent(
+                rawUserCommand = trimmed,
+                intentType = LiaClassifiedIntentType.SEND_MESSAGE,
+                systemIntentAction = Intent.ACTION_SEND,
+                deepLinkUri = appMsgUri,
+                targetPackage = channel.packageName,
+                resolvedAppLabel = targetLabel,
+                extractedParameters = buildMap {
+                    put("channel", channel.id)
+                    if (rawRecipient.isNotBlank()) put("recipient", rawRecipient)
+                    if (msgBody.isNotBlank()) put("body", msgBody)
+                },
+                bypassConfirmationMenu = true,
+                summaryMessageFr = summary
+            )
+            _lastClassifiedIntent.value = classified
+            return classified
+        }
+
+        // 6. MAPS_NAVIGATION : recherche dans maps, itinéraire, destination
+        val isMapsIntent = lower.contains("maps") ||
+            lower.contains("carte") ||
+            lower.startsWith("itinéraire") ||
+            lower.startsWith("itineraire") ||
+            lower.startsWith("navigation") ||
             lower.startsWith("va à ") ||
             lower.startsWith("aller à ") ||
             lower.startsWith("navigate to ") ||
-            lower.startsWith("emmène-moi à ") ||
-            lower.startsWith("emmene-moi a ")
-        ) {
-            val destination = trimmed.replace(
-                Regex("^(?:itinéraire\\s+vers|itineraire\\s+vers|navigation\\s+vers|va\\s+à|aller\\s+à|navigate\\s+to|emm[èe]ne-moi\\s+[àa])\\s+", RegexOption.IGNORE_CASE),
-                ""
-            ).trim()
-            if (destination.isNotBlank()) {
-                val travelMode = when {
-                    lower.contains("à pied") || lower.contains("marche") -> "w"
-                    lower.contains("vélo") || lower.contains("velo") -> "b"
-                    else -> "d"
-                }
-                val geoUri = "geo:0,0?q=${Uri.encode(destination)}"
-                val classified = ClassifiedUserIntent(
-                    rawUserCommand = trimmed,
-                    intentType = LiaClassifiedIntentType.MAPS_NAVIGATION,
-                    systemIntentAction = Intent.ACTION_VIEW,
-                    deepLinkUri = geoUri,
-                    targetPackage = "com.google.android.apps.maps",
-                    resolvedAppLabel = "Google Maps ($destination)",
-                    extractedParameters = mapOf(
-                        "destination" to destination,
-                        "mode" to travelMode
-                    ),
-                    bypassConfirmationMenu = true,
-                    summaryMessageFr = "🗺️ Je lance l'itinéraire **Google Maps** vers **« $destination »**."
-                )
-                _lastClassifiedIntent.value = classified
-                return classified
+            lower.startsWith("emmène-moi") ||
+            lower.startsWith("emmene-moi") ||
+            lower.startsWith("guide-moi") ||
+            lower.startsWith("où se trouve") ||
+            lower.startsWith("ou se trouve")
+
+        if (isMapsIntent) {
+            val destination = trimmed
+                .replace(Regex("^(?:faire\\s+une\\s+recherche\\s+(?:dans|sur)\\s+(?:google\\s+)?maps(?:\\s+et\\s+lancer)?|recherche(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|cherche(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|trouve(?:r)?\\s+(?:dans|sur)\\s+(?:google\\s+)?maps|ouvre(?:r)?\\s+(?:google\\s+)?maps(?:\\s+et\\s+cherche(?:r)?)?|itin[ée]raire\\s+vers|navigation\\s+vers|va\\s+[àa]|aller\\s+[àa]|navigate\\s+to|emm[èe]ne-moi\\s+[àa]|guide-moi\\s+vers|o[ùu]\\s+se\\s+trouve|maps)\\s*", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s+(?:dans|sur)\\s+(?:google\\s+)?maps.*$", RegexOption.IGNORE_CASE), "")
+                .trim()
+
+            val geoUri = if (destination.isNotBlank()) "geo:0,0?q=${Uri.encode(destination)}" else "geo:0,0?q="
+            val summary = if (destination.isNotBlank()) {
+                "🗺️ Je lance la recherche **Google Maps** pour **« $destination »**."
+            } else {
+                "🗺️ J'ouvre la recherche **Google Maps**."
             }
+            val label = if (destination.isNotBlank()) "Google Maps ($destination)" else "Google Maps"
+
+            val classified = ClassifiedUserIntent(
+                rawUserCommand = trimmed,
+                intentType = LiaClassifiedIntentType.MAPS_NAVIGATION,
+                systemIntentAction = Intent.ACTION_VIEW,
+                deepLinkUri = geoUri,
+                targetPackage = "com.google.android.apps.maps",
+                resolvedAppLabel = label,
+                extractedParameters = mapOf("destination" to destination),
+                bypassConfirmationMenu = true,
+                summaryMessageFr = summary
+            )
+            _lastClassifiedIntent.value = classified
+            return classified
         }
 
         // 7. Open most used app via UsageStatsManager : "ouvre mon application la plus utilisée"
@@ -756,6 +817,8 @@ object IntentHandler {
                 LiaClassifiedIntentType.PLAY_STORE_SEARCH to Intent.ACTION_VIEW
             packageNameOrUri.startsWith("share_text:") ->
                 LiaClassifiedIntentType.SHARE_CONTENT to Intent.ACTION_SEND
+            packageNameOrUri.startsWith("app_msg:") ->
+                LiaClassifiedIntentType.SEND_MESSAGE to Intent.ACTION_SEND
             packageNameOrUri.startsWith("app_search:") ->
                 LiaClassifiedIntentType.DEEP_APP_SEARCH to Intent.ACTION_SEARCH
             packageNameOrUri.contains("youtube.com") ->

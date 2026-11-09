@@ -157,6 +157,20 @@ object LiaCrossAppKnowledgeResolver {
 
         return runCatching {
             when (channel) {
+                MessagingAppChannel.SMS -> {
+                    val smsUri = if (effectivePhone.isNotBlank()) Uri.parse("smsto:$effectivePhone") else Uri.parse("smsto:")
+                    val smsIntent = Intent(Intent.ACTION_SENDTO, smsUri).apply {
+                        if (messageText.isNotBlank()) {
+                            putExtra("sms_body", messageText)
+                            putExtra(Intent.EXTRA_TEXT, messageText)
+                        }
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    }
+                    context.startActivity(smsIntent)
+                    LiaAppUsageTrackerService.recordAppOpenEvent(context, channel.packageName, channel.displayName)
+                    return true
+                }
+
                 MessagingAppChannel.WHATSAPP -> {
                     // Si on a le numéro du contact et un message, on ouvre directement la conversation WhatsApp du contact !
                     if (effectivePhone.isNotBlank()) {
@@ -179,16 +193,20 @@ object LiaCrossAppKnowledgeResolver {
                         context.startActivity(waIntent)
                         return true
                     }
-                    // Sinon partage direct du texte dans WhatsApp
-                    if (messageText.isNotBlank() && isPackageInstalled(pm, channel.packageName)) {
-                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            setPackage(channel.packageName)
-                            putExtra(Intent.EXTRA_TEXT, messageText)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                    // Sinon partage direct du texte dans WhatsApp si installé
+                    if (messageText.isNotBlank()) {
+                        if (isPackageInstalled(pm, channel.packageName)) {
+                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                setPackage(channel.packageName)
+                                putExtra(Intent.EXTRA_TEXT, messageText)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            context.startActivity(sendIntent)
+                            return true
+                        } else {
+                            return launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
                         }
-                        context.startActivity(sendIntent)
-                        return true
                     }
                     openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
                 }
@@ -202,12 +220,12 @@ object LiaCrossAppKnowledgeResolver {
                                 putExtra(Intent.EXTRA_TEXT, messageText)
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
                             }
-                            val resolved = pm.resolveActivity(sendIntent, PackageManager.MATCH_DEFAULT_ONLY)
-                            if (resolved != null) {
+                            val launched = runCatching {
                                 context.startActivity(sendIntent)
                                 LiaAppUsageTrackerService.recordAppOpenEvent(context, channel.packageName, channel.displayName)
-                                return true
-                            }
+                                true
+                            }.getOrDefault(false)
+                            if (launched) return true
                         }
                         val launch = pm.getLaunchIntentForPackage(channel.packageName)?.apply {
                             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
@@ -217,6 +235,10 @@ object LiaCrossAppKnowledgeResolver {
                             LiaAppUsageTrackerService.recordAppOpenEvent(context, channel.packageName, channel.displayName)
                             return true
                         }
+                    }
+                    // Si Messenger n'est pas installé sur l'appareil (ex: émulateur de test) mais qu'un message doit être préparé :
+                    if (messageText.isNotBlank()) {
+                        return launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
                     }
                     // Fallback URI fb-messenger://threads ou Messenger Web
                     runCatching {
@@ -232,41 +254,111 @@ object LiaCrossAppKnowledgeResolver {
                 }
 
                 MessagingAppChannel.GOOGLE_KEEP -> {
-                    if (messageText.isNotBlank() && isPackageInstalled(pm, channel.packageName)) {
-                        val keepIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            setPackage(channel.packageName)
-                            putExtra(Intent.EXTRA_SUBJECT, "Note LIA")
-                            putExtra(Intent.EXTRA_TEXT, messageText)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-                        }
-                        if (pm.resolveActivity(keepIntent, PackageManager.MATCH_DEFAULT_ONLY) != null) {
-                            context.startActivity(keepIntent)
-                            return true
+                    if (messageText.isNotBlank()) {
+                        if (isPackageInstalled(pm, channel.packageName)) {
+                            val keepIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                setPackage(channel.packageName)
+                                putExtra(Intent.EXTRA_SUBJECT, "Note LIA")
+                                putExtra(Intent.EXTRA_TEXT, messageText)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            val launched = runCatching {
+                                context.startActivity(keepIntent)
+                                true
+                            }.getOrDefault(false)
+                            if (launched) return true
+                        } else {
+                            return launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
                         }
                     }
                     openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
                 }
 
-                else -> {
-                    if (messageText.isNotBlank() && isPackageInstalled(pm, channel.packageName)) {
-                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            setPackage(channel.packageName)
-                            putExtra(Intent.EXTRA_TEXT, messageText)
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                MessagingAppChannel.TELEGRAM -> {
+                    if (isPackageInstalled(pm, channel.packageName)) {
+                        if (messageText.isNotBlank()) {
+                            val tgUri = Uri.parse("tg://msg?text=${Uri.encode(messageText)}")
+                            val tgIntent = Intent(Intent.ACTION_VIEW, tgUri).apply {
+                                setPackage(channel.packageName)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            val ok = runCatching {
+                                context.startActivity(tgIntent)
+                                true
+                            }.getOrElse {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    setPackage(channel.packageName)
+                                    putExtra(Intent.EXTRA_TEXT, messageText)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                                }
+                                context.startActivity(sendIntent)
+                                true
+                            }
+                            if (ok) return true
                         }
-                        if (pm.resolveActivity(sendIntent, PackageManager.MATCH_DEFAULT_ONLY) != null) {
-                            context.startActivity(sendIntent)
-                            return true
+                    } else if (messageText.isNotBlank()) {
+                        return launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
+                    }
+                    openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
+                }
+
+                else -> {
+                    if (messageText.isNotBlank()) {
+                        if (isPackageInstalled(pm, channel.packageName)) {
+                            val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                setPackage(channel.packageName)
+                                putExtra(Intent.EXTRA_TEXT, messageText)
+                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                            }
+                            val launched = runCatching {
+                                context.startActivity(sendIntent)
+                                true
+                            }.getOrDefault(false)
+                            if (launched) return true
+                        } else {
+                            return launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
                         }
                     }
                     openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
                 }
             }
         }.getOrElse {
-            openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
+            if (messageText.isNotBlank()) {
+                launchChooserFallback(context, messageText, recipientNameOrPhone, channel.displayName)
+            } else {
+                openAppOrFallbackWeb(context, channel.packageName, channel.fallbackWebUrl, channel.displayName)
+            }
         }
+    }
+
+    private fun launchChooserFallback(
+        context: Context,
+        messageText: String,
+        recipientNameOrPhone: String,
+        channelName: String
+    ): Boolean {
+        return runCatching {
+            val title = if (recipientNameOrPhone.isNotBlank()) {
+                "Message pour $recipientNameOrPhone ($channelName)"
+            } else {
+                "Envoyer via ($channelName)"
+            }
+            val baseIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_TEXT, messageText)
+                if (recipientNameOrPhone.isNotBlank()) {
+                    putExtra(Intent.EXTRA_TITLE, title)
+                }
+            }
+            val chooser = Intent.createChooser(baseIntent, title).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(chooser)
+            true
+        }.getOrDefault(false)
     }
 
     private fun isPackageInstalled(pm: PackageManager, pkg: String): Boolean {
