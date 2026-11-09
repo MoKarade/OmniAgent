@@ -1765,9 +1765,10 @@ object LiaAssistantBrain {
             lower.contains("système interne") ||
             lower.contains("systeme interne")
         ) {
-            val souvenirsCount = snap.souvenirs.size
-            val factsCount = snap.userFacts.size
-            val auditBlocks = com.example.security.SoniaSecurityKernel.auditBlockchain.value.size
+            val currentStoreState = LiaMemoryAndHistoryStore.state.value
+            val souvenirsCount = currentStoreState.souvenirs.size
+            val factsCount = currentStoreState.userFacts.size
+            val auditBlocks = com.example.security.SoniaSecurityKernel.getAuditBlockCount()
             return LiaBrainTurnOutcome(
                 replyText = "Voici mon **Architecture Système LIA (Zero-Trust & Gemini 2026)** active :\n\n" +
                     "1. **Cerveau IA Gemini 2026 (`GeminiDualEngineClient`)** : Orchestration adaptative entre `gemini-3.8-flash` (rapide multimodal), `gemini-4-argon` (raisonnement profond) et `gemini-3.5-flash-lite` (ultra-basse latence).\n" +

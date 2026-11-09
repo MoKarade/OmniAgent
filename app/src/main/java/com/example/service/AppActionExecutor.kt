@@ -341,12 +341,13 @@ class AppActionExecutor : Service() {
             // 4. Escalade HITL si mot-clé sensible ou si confirmation exigée dans les permissions MCP
             val lower = cleaned.lowercase()
             val containsSensitiveKeyword = SENSITIVE_OR_FINANCIAL_KEYWORDS.any { lower.contains(it) }
-            val mcpConnectors = LiaMcpConnectorRegistry.connectors.value
+            val regState = LiaMcpConnectorRegistry.state.value
+            val mcpConnectors = regState.connectors
             val matchingConnector = mcpConnectors.find {
                 it.packageName.equals(classifiedSpec.targetPackage, ignoreCase = true) ||
                     it.appName.equals(classifiedSpec.resolvedAppLabel, ignoreCase = true)
             }
-            if (matchingConnector != null && !matchingConnector.isEnabled) {
+            if (matchingConnector != null && regState.disabledConnectorIds.contains(matchingConnector.connectorId)) {
                 val reason = "Connecteur '${matchingConnector.appName}' désactivé dans Paramètres MCP"
                 return FastPathDispatchResult(
                     taskId = taskId,

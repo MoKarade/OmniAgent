@@ -1203,8 +1203,8 @@ class SoniaOverlayBubbleService : Service() {
                 // SEC-01: Sensitive URIs (tel:, smsto:, mailto:, https://) require explicit user tap on the bubble action button
                 AppActionExecutor.executeTargetDirectly(
                     context = this@SoniaOverlayBubbleService,
-                    targetPackageOrUri = launchAction.packageName,
-                    label = launchAction.appLabel,
+                    packageNameOrUri = launchAction.packageName,
+                    appLabel = launchAction.appLabel,
                     userExplicitlyConfirmed = false
                 )
             }

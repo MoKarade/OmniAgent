@@ -17,11 +17,13 @@ import com.example.model.FriendlyMissionSuggestion
 import com.example.model.GlobalAccessPolicyMode
 import com.example.model.LiveCognitiveTelemetry
 import com.example.model.McpCategory
+import com.example.data.LiaAppLaunchAction
+import com.example.data.LiaChatMessage
 import com.example.model.McpRecord
 import com.example.model.SecurityPosture
 import com.example.model.SystemInstructionsProvider
 import com.example.model.currentTimeFormatted
-import com.example.security.SoniaAuditBlock
+import com.example.security.ChainedSecurityAuditBlock
 import com.example.security.SoniaSecurityKernel
 import com.example.service.AppActionExecutor
 import com.example.service.LiaMcpConnectorRegistry
@@ -63,7 +65,7 @@ data class OmniAgentUiState(
     val isBubbleMinimizedToEdge: Boolean = false,
     val isBubbleDockedRight: Boolean = true,
     // Security & Audit Vault State
-    val auditBlockchain: List<SoniaAuditBlock> = SoniaSecurityKernel.buildGenesisChain(),
+    val auditBlockchain: List<ChainedSecurityAuditBlock> = SoniaSecurityKernel.buildInitialAuditChain(),
     val dlpBlockedCount: Int = 0,
     val isVaultPinLocked: Boolean = false,
     val isUserPinConfigured: Boolean = false,
@@ -99,7 +101,7 @@ class OmniAgentViewModel(
 
     init {
         refreshMcpRetrieval()
-        GeminiDualEngineClient.applicationContextRef?.let { refreshSecurityState(it) }
+        LiaMemoryAndHistoryStore.getApplicationContextOrNull()?.let { refreshSecurityState(it) }
         if (initialUserId != null && firestoreRepository != null) {
             bindAuthenticatedUser(initialUserId, initialUserEmail, firestoreRepository)
         }
@@ -153,14 +155,9 @@ class OmniAgentViewModel(
 
         cloudSyncJob = viewModelScope.launch {
             runCatching {
-                repository.upsertUserSessionProfile(
+                repository.seedDefaultMcpRecordsBatch(
                     userId = userId,
-                    email = userEmail,
-                    displayName = userEmail?.substringBefore('@')
-                )
-                repository.seedDefaultMcpVaultIfEmpty(
-                    userId = userId,
-                    defaults = SystemInstructionsProvider.defaultMcpVault()
+                    records = SystemInstructionsProvider.defaultMcpVault()
                 )
             }
 
@@ -176,7 +173,8 @@ class OmniAgentViewModel(
             launch {
                 repository.observeCognitiveLogs(userId).collect { remoteSteps ->
                     if (remoteSteps.isNotEmpty() && _uiState.value.cognitiveHistory.isEmpty()) {
-                        _uiState.update { it.copy(cognitiveHistory = remoteSteps) }
+                        val domainSteps = remoteSteps.map { it.toDomainStep() }
+                        _uiState.update { it.copy(cognitiveHistory = domainSteps) }
                     }
                 }
             }
@@ -246,13 +244,14 @@ class OmniAgentViewModel(
     fun setGlobalAccessPolicy(mode: GlobalAccessPolicyMode) {
         SoniaSecurityKernel.updateGlobalPolicy(mode)
         _uiState.update { state ->
-            val prevHash = state.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+            val prevHash = state.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
             val auditBlock = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                actor = "Utilisateur",
-                operation = "GLOBAL_POLICY_CHANGE",
-                detail = "Politique globale basculée vers ${mode.title} (${mode.name})",
-                prevHash = prevHash,
-                status = if (mode == GlobalAccessPolicyMode.LOCKDOWN) SecurityPosture.BLOCKED else SecurityPosture.NOMINAL
+                timestampFormatted = currentTimeFormatted(),
+                agentName = "Utilisateur",
+                toolName = "GLOBAL_POLICY_CHANGE",
+                actionSummary = "Politique globale basculée vers ${mode.frenchTitle} (${mode.name})",
+                granted = mode != GlobalAccessPolicyMode.LOCKDOWN,
+                previousHash = prevHash
             )
             state.copy(
                 globalAccessPolicy = mode,
@@ -268,13 +267,14 @@ class OmniAgentViewModel(
         val success = SoniaSecurityKernel.setOrUpdateUserPin(context, newPin)
         if (success) {
             _uiState.update { state ->
-                val prevHash = state.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+                val prevHash = state.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
                 val block = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                    actor = "Utilisateur",
-                    operation = "VAULT_PIN_CONFIGURED",
-                    detail = "Code PIN personnel configuré avec hachage PBKDF2-HMAC-SHA256 salé",
-                    prevHash = prevHash,
-                    status = SecurityPosture.NOMINAL
+                    timestampFormatted = currentTimeFormatted(),
+                    agentName = "Utilisateur",
+                    toolName = "VAULT_PIN_CONFIGURED",
+                    actionSummary = "Code PIN personnel configuré avec hachage PBKDF2-HMAC-SHA256 salé",
+                    granted = true,
+                    previousHash = prevHash
                 )
                 state.copy(
                     isUserPinConfigured = true,
@@ -293,13 +293,14 @@ class OmniAgentViewModel(
     fun verifySecurityPin(context: Context, pin: String): Boolean {
         val unlocked = SoniaSecurityKernel.verifyUserPin(context, pin)
         _uiState.update { state ->
-            val prevHash = state.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+            val prevHash = state.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
             val block = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                actor = "Utilisateur",
-                operation = if (unlocked) "VAULT_UNLOCK" else "VAULT_AUTH_FAIL",
-                detail = if (unlocked) "Déverrouillage PIN PBKDF2 réussi" else "Tentative PIN invalide bloquée",
-                prevHash = prevHash,
-                status = if (unlocked) SecurityPosture.NOMINAL else SecurityPosture.ELEVATED_WARNING
+                timestampFormatted = currentTimeFormatted(),
+                agentName = "Utilisateur",
+                toolName = if (unlocked) "VAULT_UNLOCK" else "VAULT_AUTH_FAIL",
+                actionSummary = if (unlocked) "Déverrouillage PIN PBKDF2 réussi" else "Tentative PIN invalide bloquée",
+                granted = unlocked,
+                previousHash = prevHash
             )
             state.copy(
                 isVaultPinLocked = !unlocked,
@@ -317,9 +318,9 @@ class OmniAgentViewModel(
                 }
                 return
             }
-            SoniaSecurityKernel.lockVault()
+            SoniaSecurityKernel.lockVault(context)
         } else {
-            SoniaSecurityKernel.isVaultLockedRuntime = false
+            SoniaSecurityKernel.unlockVault(context)
         }
         _uiState.update {
             it.copy(
@@ -332,13 +333,14 @@ class OmniAgentViewModel(
     fun clearUserSecurityPin(context: Context) {
         SoniaSecurityKernel.clearUserPin(context)
         _uiState.update { state ->
-            val prevHash = state.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+            val prevHash = state.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
             val block = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                actor = "Utilisateur",
-                operation = "VAULT_PIN_REMOVED",
-                detail = "Code PIN personnel supprimé par l'utilisateur",
-                prevHash = prevHash,
-                status = SecurityPosture.NOMINAL
+                timestampFormatted = currentTimeFormatted(),
+                agentName = "Utilisateur",
+                toolName = "VAULT_PIN_REMOVED",
+                actionSummary = "Code PIN personnel supprimé par l'utilisateur",
+                granted = true,
+                previousHash = prevHash
             )
             state.copy(
                 isUserPinConfigured = false,
@@ -405,7 +407,7 @@ class OmniAgentViewModel(
                 state.allowedMcpCategories.contains(record.category) &&
                     (queryTerms.isEmpty() || queryTerms.any { term ->
                         record.title.lowercase().contains(term) ||
-                            record.snippet.lowercase().contains(term) ||
+                            record.subtitle.lowercase().contains(term) ||
                             record.category.displayName.lowercase().contains(term)
                     })
             }.ifEmpty {
@@ -456,13 +458,14 @@ class OmniAgentViewModel(
         // 1. DLP & Anti-Prompt-Injection Inspection
         val dlpReport = SoniaSecurityKernel.inspectAndSanitize(mission)
         if (!dlpReport.isSafe) {
-            val prevHash = stateSnapshot.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+            val prevHash = stateSnapshot.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
             val block = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                actor = "Pare-feu DLP",
-                operation = "DLP_BLOCK_INJECTION",
-                detail = "Menace bloquée : ${dlpReport.detectedThreats.firstOrNull()}",
-                prevHash = prevHash,
-                status = SecurityPosture.BLOCKED
+                timestampFormatted = currentTimeFormatted(),
+                agentName = "Pare-feu DLP",
+                toolName = "DLP_BLOCK_INJECTION",
+                actionSummary = "Menace bloquée : ${dlpReport.detectedThreats.firstOrNull()}",
+                granted = false,
+                previousHash = prevHash
             )
             _uiState.update {
                 it.copy(
@@ -492,55 +495,68 @@ class OmniAgentViewModel(
         }
 
         // 2. Try Fast-Path Routine Queue if enabled in AI Preferences
-        val appCtx = GeminiDualEngineClient.applicationContextRef
+        val appCtx = LiaMemoryAndHistoryStore.getApplicationContextOrNull()
         val fastPathAllowed = LiaMcpConnectorRegistry.currentAiPreferences.fastPathEnabled &&
             stateSnapshot.globalAccessPolicy == GlobalAccessPolicyMode.FULL_AUTONOMOUS_ACCESS
 
         if (fastPathAllowed && appCtx != null) {
             val fastPathResult = AppActionExecutor.tryDispatchRoutineTaskViaFastPathQueue(
-                rawMission = dlpReport.sanitizedText,
                 context = appCtx,
-                promptProfile = dynamicProfile
+                rawUserCommand = dlpReport.sanitizedText,
+                isVaultPinLocked = stateSnapshot.isVaultPinLocked,
+                globalAccessPolicy = stateSnapshot.globalAccessPolicy
             )
-            if (fastPathResult != null) {
-                LiaMemoryAndHistoryStore.appendExchange(
-                    userText = dlpReport.sanitizedText,
-                    liaReply = fastPathResult.summaryMessageFr,
+            if (fastPathResult != null && fastPathResult.executedViaFastPath) {
+                val userMsg = LiaChatMessage(
+                    id = "msg_${System.currentTimeMillis()}_u",
+                    role = "user",
+                    text = dlpReport.sanitizedText,
+                    timestamp = currentTimeFormatted(),
+                    source = "app"
+                )
+                val liaMsg = LiaChatMessage(
+                    id = "msg_${System.currentTimeMillis()}_l",
+                    role = "lia",
+                    text = fastPathResult.summaryMessageFr,
+                    timestamp = currentTimeFormatted(),
                     source = "app",
                     learnedNote = "⚡ Exécution directe Fast-Path (${fastPathResult.queueLatencyMs} ms)",
-                    appLaunchAction = com.example.data.LiaAppLaunchAction(
+                    appLaunchAction = LiaAppLaunchAction(
                         packageName = fastPathResult.targetPackageOrUri,
                         appLabel = fastPathResult.resolvedActionLabel,
                         isInstantShortcut = true,
                         latencyMs = fastPathResult.queueLatencyMs
                     )
                 )
+                LiaMemoryAndHistoryStore.appendMessage(userMsg)
+                LiaMemoryAndHistoryStore.appendMessage(liaMsg)
+
                 val nextIndex = _uiState.value.cognitiveHistory.size + 1
                 val fastStep = CognitiveStepResult(
                     stepIndex = nextIndex,
-                    timestampFormatted = currentTimeFormatted(),
-                    screenTitle = fastPathResult.resolvedActionLabel,
-                    modelUsed = "LIA Fast-Path Queue (${dynamicProfile.tier.badgeLabel})",
-                    observation = "Commande directe reconnue (${fastPathResult.taskCategoryLabel})",
+                    observation = "Commande directe reconnue (${fastPathResult.resolvedActionLabel})",
                     thought = "Exécution déterministe immédiate sans appel réseau LLM.",
                     subgoal = fastPathResult.resolvedActionLabel,
                     action = AtomicAction(
                         tool = "fast_path_launch",
-                        packageName = fastPathResult.targetPackageOrUri,
+                        appName = fastPathResult.resolvedActionLabel,
                         summary = fastPathResult.summaryMessageFr
                     ),
-                    mcpContextUsed = emptyList(),
-                    securityStatus = SecurityPosture.NOMINAL,
+                    securityPosture = SecurityPosture.SAFE,
+                    securityNotes = "⚡ Fast-Path exécuté en ${fastPathResult.queueLatencyMs} ms",
+                    rawJson = "",
                     executionOutcome = "✓ Exécuté en ${fastPathResult.queueLatencyMs} ms",
+                    modelUsed = "LIA Fast-Path Queue (${dynamicProfile.tier.badgeLabel})",
                     durationMs = fastPathResult.queueLatencyMs
                 )
-                val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+                val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
                 val auditBlock = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                    actor = "Fast-Path",
-                    operation = "FAST_PATH_DISPATCH",
-                    detail = "${fastPathResult.resolvedActionLabel} (${fastPathResult.targetPackageOrUri})",
-                    prevHash = prevHash,
-                    status = SecurityPosture.NOMINAL
+                    timestampFormatted = currentTimeFormatted(),
+                    agentName = "Fast-Path",
+                    toolName = "FAST_PATH_DISPATCH",
+                    actionSummary = "${fastPathResult.resolvedActionLabel} (${fastPathResult.targetPackageOrUri})",
+                    granted = true,
+                    previousHash = prevHash
                 )
                 _uiState.update { state ->
                     state.copy(
@@ -566,7 +582,8 @@ class OmniAgentViewModel(
                     status = AgentOperationalStatus.THINKING,
                     liveTelemetry = LiveCognitiveTelemetry(
                         stage = CognitivePipelineStage.THINKING,
-                        activeModel = "Gemini 3.8 Flash / Gemini 4 Argon",
+                        modelName = "gemini-3.8-flash",
+                        modelLabel = "Gemini 3.8 Flash / Gemini 4 Argon",
                         liveObservation = "Analyse de votre demande : « ${dlpReport.sanitizedText.take(60)} »",
                         liveThought = "Mobilisation de vos souvenirs RAG et des connecteurs MCP…",
                         liveSubgoal = dynamicProfile.taskCategoryLabel
@@ -588,8 +605,8 @@ class OmniAgentViewModel(
             ) {
                 autoLaunched = AppActionExecutor.executeTargetDirectly(
                     context = appCtx,
-                    targetPackageOrUri = launchAction.packageName,
-                    label = launchAction.appLabel,
+                    packageNameOrUri = launchAction.packageName,
+                    appLabel = launchAction.appLabel,
                     userExplicitlyConfirmed = false
                 )
             }
@@ -603,34 +620,34 @@ class OmniAgentViewModel(
 
             val stepResult = CognitiveStepResult(
                 stepIndex = nextIndex,
-                timestampFormatted = currentTimeFormatted(),
-                screenTitle = launchAction?.appLabel ?: "Chat LIA",
-                modelUsed = "LIA Brain (${dynamicProfile.tier.badgeLabel})",
                 observation = dlpReport.sanitizedText,
                 thought = outcome.learnedNote ?: "Réponse synthétisée avec contexte personnel et outils MCP.",
                 subgoal = launchAction?.let { "Action : ${it.appLabel}" } ?: "Réponse directe à l'utilisateur",
                 action = AtomicAction(
                     tool = if (launchAction != null) "open_app" else "chat_reply",
-                    packageName = launchAction?.packageName,
+                    appName = launchAction?.packageName ?: "",
                     summary = cleanSummary.take(240)
                 ),
-                mcpContextUsed = _uiState.value.retrievedMcpContext.map { it.title },
-                securityStatus = SecurityPosture.NOMINAL,
+                securityPosture = SecurityPosture.SAFE,
+                securityNotes = "",
+                rawJson = "",
                 executionOutcome = when {
                     autoLaunched -> "✓ Application ouverte (${launchAction?.appLabel})"
                     launchAction != null -> "🔒 Prêt à ouvrir sur confirmation (${launchAction.appLabel})"
                     else -> "✓ Réponse générée en $elapsedMs ms"
                 },
+                modelUsed = "LIA Brain (${dynamicProfile.tier.badgeLabel})",
                 durationMs = elapsedMs
             )
 
-            val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+            val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
             val auditBlock = SoniaSecurityKernel.nextMonotonicAuditBlock(
-                actor = "LIA Brain",
-                operation = if (launchAction != null) "ACTION_${launchAction.packageName.take(24)}" else "CHAT_RESPONSE",
-                detail = cleanSummary.take(90),
-                prevHash = prevHash,
-                status = SecurityPosture.NOMINAL
+                timestampFormatted = currentTimeFormatted(),
+                agentName = "LIA Brain",
+                toolName = if (launchAction != null) "ACTION_${launchAction.packageName.take(24)}" else "CHAT_RESPONSE",
+                actionSummary = cleanSummary.take(90),
+                granted = true,
+                previousHash = prevHash
             )
 
             val spokenClean = cleanSummary
@@ -647,7 +664,8 @@ class OmniAgentViewModel(
                     auditBlockchain = (listOf(auditBlock) + state.auditBlockchain).take(40),
                     liveTelemetry = LiveCognitiveTelemetry(
                         stage = CognitivePipelineStage.COMPLETED,
-                        activeModel = stepResult.modelUsed,
+                        modelName = stepResult.modelUsed,
+                        modelLabel = stepResult.modelUsed,
                         liveObservation = stepResult.observation,
                         liveThought = stepResult.thought,
                         liveSubgoal = stepResult.executionOutcome,
@@ -660,30 +678,31 @@ class OmniAgentViewModel(
             val uid = _uiState.value.authenticatedUserId
             val repo = firestoreRepository
             if (uid != null && repo != null) {
-                runCatching { repo.appendCognitiveStep(uid, stepResult) }
+                runCatching { repo.saveCognitiveLog(uid, stepResult) }
             }
         }
     }
 
     fun resolveHitlConfirmation(approved: Boolean) {
         val pending = _uiState.value.pendingHitlRequest ?: return
-        val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.currHash ?: "0000000000000000"
+        val prevHash = _uiState.value.auditBlockchain.firstOrNull()?.blockHash ?: "0000000000000000"
         val auditBlock = SoniaSecurityKernel.nextMonotonicAuditBlock(
-            actor = "Utilisateur HITL",
-            operation = if (approved) "HITL_APPROVED" else "HITL_REJECTED",
-            detail = pending.question.take(80),
-            prevHash = prevHash,
-            status = if (approved) SecurityPosture.NOMINAL else SecurityPosture.BLOCKED
+            timestampFormatted = currentTimeFormatted(),
+            agentName = "Utilisateur HITL",
+            toolName = if (approved) "HITL_APPROVED" else "HITL_REJECTED",
+            actionSummary = pending.question.take(80),
+            granted = approved,
+            previousHash = prevHash
         )
 
         if (approved) {
-            val pkg = pending.stagedFollowUpAction.packageName
-            val appCtx = GeminiDualEngineClient.applicationContextRef
-            if (!pkg.isNullOrBlank() && appCtx != null) {
+            val pkg = pending.stagedFollowUpAction.appName
+            val appCtx = LiaMemoryAndHistoryStore.getApplicationContextOrNull()
+            if (pkg.isNotBlank() && appCtx != null) {
                 AppActionExecutor.executeTargetDirectly(
                     context = appCtx,
-                    targetPackageOrUri = pkg,
-                    label = pending.stagedSubgoal,
+                    packageNameOrUri = pkg,
+                    appLabel = pending.stagedSubgoal,
                     userExplicitlyConfirmed = true
                 )
             }

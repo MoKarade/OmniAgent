@@ -952,18 +952,14 @@ private fun DebugLogsSectionContent(
         uiState.auditBlockchain.take(25).forEach { block ->
             list.add(
                 McpDebugLogEntry(
-                    id = "sec_${block.index}_${block.currHash}",
-                    timestamp = block.timestamp,
+                    id = "sec_${block.index}_${block.blockHash}",
+                    timestamp = block.timestampFormatted,
                     category = "SÉCURITÉ",
-                    title = "${block.actor} • ${block.operation}",
-                    detail = "${block.detail} (SHA-256 : ${block.currHash})",
+                    title = "${block.agentName} • ${block.toolName}",
+                    detail = "${block.actionSummary} (SHA-256 : ${block.blockHash})",
                     toolOrPackageId = "sonia.security.kernel",
                     latencyMs = 2L,
-                    level = when (block.status) {
-                        SecurityPosture.NOMINAL -> McpDebugLogLevel.INFO
-                        SecurityPosture.ELEVATED_WARNING -> McpDebugLogLevel.WARNING
-                        SecurityPosture.BLOCKED -> McpDebugLogLevel.ERROR
-                    }
+                    level = if (block.granted) McpDebugLogLevel.INFO else McpDebugLogLevel.ERROR
                 )
             )
         }
@@ -1393,6 +1389,7 @@ private fun SecurityVaultSectionContent(
                         val selected = uiState.globalAccessPolicy == mode
                         val modeColor = when (mode) {
                             GlobalAccessPolicyMode.FULL_AUTONOMOUS_ACCESS -> GoogleGreen
+                            GlobalAccessPolicyMode.SELECTIVE_ZERO_TRUST -> GoogleBlue
                             GlobalAccessPolicyMode.OBSERVATION_ONLY -> GoogleYellow
                             GlobalAccessPolicyMode.LOCKDOWN -> GoogleRed
                         }
@@ -1420,13 +1417,13 @@ private fun SecurityVaultSectionContent(
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(
-                                        text = mode.title,
+                                        text = mode.frenchTitle,
                                         style = MaterialTheme.typography.bodyMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = if (selected) modeColor else GoogleTextPrimary
                                     )
                                     Text(
-                                        text = mode.subtitle,
+                                        text = mode.description,
                                         style = MaterialTheme.typography.bodySmall,
                                         color = GoogleTextSecondary
                                     )
@@ -1638,11 +1635,7 @@ private fun SecurityVaultSectionContent(
                     )
 
                     uiState.auditBlockchain.take(8).forEach { block ->
-                        val statusColor = when (block.status) {
-                            SecurityPosture.NOMINAL -> GoogleGreen
-                            SecurityPosture.ELEVATED_WARNING -> GoogleYellow
-                            SecurityPosture.BLOCKED -> GoogleRed
-                        }
+                        val statusColor = if (block.granted) GoogleGreen else GoogleRed
                         Surface(
                             shape = RoundedCornerShape(14.dp),
                             color = Color(0xFF141822).copy(alpha = 0.72f),
@@ -1662,25 +1655,25 @@ private fun SecurityVaultSectionContent(
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
                                     Text(
-                                        text = "#${block.index} • ${block.actor} (${block.operation})",
+                                        text = "#${block.index} • ${block.agentName} (${block.toolName})",
                                         style = MaterialTheme.typography.labelMedium,
                                         fontWeight = FontWeight.Bold,
                                         color = statusColor
                                     )
                                     Text(
-                                        text = block.timestamp,
+                                        text = block.timestampFormatted,
                                         style = MaterialTheme.typography.labelSmall,
                                         fontFamily = FontFamily.Monospace,
                                         color = GoogleTextMuted
                                     )
                                 }
                                 Text(
-                                    text = block.detail,
+                                    text = block.actionSummary,
                                     style = MaterialTheme.typography.bodySmall,
                                     color = GoogleTextPrimary
                                 )
                                 Text(
-                                    text = "SHA-256 : ${block.prevHash} ➔ ${block.currHash}",
+                                    text = "SHA-256 : ${block.previousHash.take(12)}… ➔ ${block.blockHash.take(12)}…",
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     color = GoogleTextMuted

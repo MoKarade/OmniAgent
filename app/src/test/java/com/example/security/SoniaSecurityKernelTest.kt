@@ -45,15 +45,15 @@ class SoniaSecurityKernelTest {
     @Test
     fun `Action target allowlist blocks dangerous schemes and requires confirmation for sensitive URIs`() {
         assertEquals(
-            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_URI,
+            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET,
             SoniaSecurityKernel.validateActionTargetSafety("content://com.android.contacts/raw_contacts")
         )
         assertEquals(
-            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_URI,
+            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET,
             SoniaSecurityKernel.validateActionTargetSafety("file:///data/data/com.aistudio.omniagent/shared_prefs")
         )
         assertEquals(
-            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_URI,
+            ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET,
             SoniaSecurityKernel.validateActionTargetSafety("javascript:alert(1)")
         )
         assertEquals(
@@ -65,7 +65,7 @@ class SoniaSecurityKernelTest {
             SoniaSecurityKernel.validateActionTargetSafety("smsto:+33612345678")
         )
         assertEquals(
-            ActionTargetSafetyVerdict.SAFE_AUTO_LAUNCH,
+            ActionTargetSafetyVerdict.SAFE_APP_LAUNCH,
             SoniaSecurityKernel.validateActionTargetSafety("com.whatsapp")
         )
     }
@@ -92,7 +92,7 @@ class SoniaSecurityKernelTest {
         assertTrue(SoniaSecurityKernel.setOrUpdateUserPin(context, "849201"))
         assertTrue(SoniaSecurityKernel.isUserPinConfigured(context))
 
-        SoniaSecurityKernel.lockVault()
+        SoniaSecurityKernel.lockVault(context)
         assertTrue(SoniaSecurityKernel.isVaultLockedRuntime)
 
         // Wrong PIN fails and keeps vault locked
@@ -106,23 +106,25 @@ class SoniaSecurityKernelTest {
 
     @Test
     fun `SHA-256 audit blockchain generates monotonic indices and distinct cryptographic hashes`() {
-        val genesis = SoniaSecurityKernel.buildGenesisChain().first()
+        val genesis = SoniaSecurityKernel.buildInitialAuditChain().first()
         val b1 = SoniaSecurityKernel.nextMonotonicAuditBlock(
-            actor = "Test",
-            operation = "OP_1",
-            detail = "Premier bloc",
-            prevHash = genesis.currHash,
-            status = SecurityPosture.NOMINAL
+            timestampFormatted = "12:00:00",
+            agentName = "Test",
+            toolName = "OP_1",
+            actionSummary = "Premier bloc",
+            granted = true,
+            previousHash = genesis.blockHash
         )
         val b2 = SoniaSecurityKernel.nextMonotonicAuditBlock(
-            actor = "Test",
-            operation = "OP_2",
-            detail = "Deuxième bloc",
-            prevHash = b1.currHash,
-            status = SecurityPosture.NOMINAL
+            timestampFormatted = "12:00:01",
+            agentName = "Test",
+            toolName = "OP_2",
+            actionSummary = "Deuxième bloc",
+            granted = true,
+            previousHash = b1.blockHash
         )
         assertTrue(b2.index > b1.index)
-        assertEquals(b1.currHash, b2.prevHash)
-        assertNotEquals(b1.currHash, b2.currHash)
+        assertEquals(b1.blockHash, b2.previousHash)
+        assertNotEquals(b1.blockHash, b2.blockHash)
     }
 }

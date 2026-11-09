@@ -152,6 +152,21 @@ object SoniaSecurityKernel {
         return true
     }
 
+    fun unlockVault(context: Context) {
+        isVaultLockedRuntime = false
+        context.applicationContext
+            .getSharedPreferences(VAULT_PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(KEY_VAULT_LOCKED, false)
+            .apply()
+    }
+
+    fun unlockVaultRuntime() {
+        isVaultLockedRuntime = false
+    }
+
+    fun getAuditBlockCount(): Int = auditBlockCounter.get()
+
     fun clearUserPin(context: Context) {
         isVaultLockedRuntime = false
         context.applicationContext
@@ -170,6 +185,13 @@ object SoniaSecurityKernel {
             .edit()
             .putString(KEY_GLOBAL_POLICY, mode.name)
             .apply()
+    }
+
+    fun updateGlobalPolicy(mode: GlobalAccessPolicyMode) {
+        globalPolicyRuntime = mode
+        LiaMemoryAndHistoryStore.getApplicationContextOrNull()?.let { ctx ->
+            updateGlobalPolicy(ctx, mode)
+        }
     }
 
     fun hashPinWithSalt(pin: String, salt: ByteArray): String {

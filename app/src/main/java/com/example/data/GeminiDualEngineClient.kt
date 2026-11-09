@@ -43,6 +43,10 @@ object GeminiDualEngineClient {
     const val MODEL_FLASH_LITE = "gemini-3.5-flash-lite"
     const val MODEL_EMBEDDING = "gemini-embedding-2"
 
+    const val MODEL_GEMINI_3_8_FLASH = MODEL_FLASH_DEFAULT
+    const val MODEL_GEMINI_4_ARGON = MODEL_PRO_REASONING
+    const val MODEL_GEMINI_3_5_FLASH_LITE = MODEL_FLASH_LITE
+
     @Volatile
     private var cachedCustomKey: String = ""
 

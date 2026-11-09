@@ -176,11 +176,11 @@ object LiaGoogleCloudWorkspaceClient {
         val prefs = appCtx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val rawStoredToken = prefs.getString(KEY_OAUTH_ACCESS_TOKEN, "")?.trim().orEmpty()
         cachedAccessToken = if (rawStoredToken.isNotBlank()) {
-            val decrypted = SoniaSecurityKernel.decryptSensitivePayload(rawStoredToken)
+            val decrypted = SoniaSecurityKernel.decryptSensitivePayload(rawStoredToken).orEmpty()
             // SEC-02: Auto-migrate legacy plaintext OAuth token to AES-256-GCM ciphertext
             if (!rawStoredToken.startsWith("ENCv1:") && decrypted.isNotBlank()) {
                 val encrypted = SoniaSecurityKernel.encryptSensitivePayload(decrypted)
-                if (encrypted.startsWith("ENCv1:")) {
+                if (encrypted != null && encrypted.startsWith("ENCv1:")) {
                     prefs.edit().putString(KEY_OAUTH_ACCESS_TOKEN, encrypted).apply()
                 }
             }

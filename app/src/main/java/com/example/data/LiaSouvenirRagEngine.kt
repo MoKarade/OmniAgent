@@ -212,7 +212,7 @@ object LiaSouvenirRagEngine {
         if (norm.isBlank()) return null
         val key = norm.hashCode()
         onlineEmbeddingCache[key]?.let { return it }
-        return GeminiDualEngineClient.embedTextWithGeminiEmbedding2(text, outputDimensionality = 256)
+        return GeminiDualEngineClient.embedTextWithGeminiEmbedding2(text, targetDimensions = 256)
             ?.also { onlineEmbeddingCache[key] = it }
     }
 

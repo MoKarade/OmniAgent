@@ -50,6 +50,12 @@ enum class AgentOperationalStatus(
         friendlyTitle = "Accès refusé par vos réglages",
         subtitle = "Coffre verrouillé ou permission non accordée"
     ),
+    SECURITY_BLOCKED(
+        standardizedCode = "Error",
+        frenchLabel = "Bloqué Sécurité",
+        friendlyTitle = "Action bloquée par la sécurité",
+        subtitle = "Verrouillage Zero-Trust ou détection de risque"
+    ),
     COMPLETED(
         standardizedCode = "Idle",
         frenchLabel = "Terminé",
@@ -240,7 +246,9 @@ data class DynamicPromptProfile(
     val eligibleForFastPath: Boolean = false,
     val requiresStrictHitlGate: Boolean = false,
     val rationaleFr: String = "Instructions condensées sélectionnées automatiquement pour réduire la latence."
-)
+) {
+    val compiledSystemPrompt: String get() = systemInstructions
+}
 
 data class FastPathDispatchResult(
     val taskId: String,
@@ -312,5 +320,57 @@ Règles critiques :
         )
     )
 
+    val MASTER_SYSTEM_PROMPT: String get() = OFFICIAL_SYSTEM_INSTRUCTIONS
+
     fun defaultMcpRecords(): List<McpRecord> = emptyList()
+
+    fun defaultMcpVault(): List<McpRecord> = defaultMcpRecords()
+
+    fun buildDynamicPromptProfile(
+        mission: String,
+        allowedCategories: Set<McpCategory> = McpCategory.entries.toSet()
+    ): DynamicPromptProfile {
+        val lower = mission.lowercase()
+        return when {
+            lower.contains("pourquoi") || lower.contains("explique") || lower.contains("analyse") || lower.contains("synthèse") -> {
+                DynamicPromptProfile(
+                    tier = PromptComplexityTier.DEEP_CHAIN_OF_THOUGHT,
+                    taskCategoryLabel = "Raisonnement Approfondi",
+                    systemInstructions = OFFICIAL_SYSTEM_INSTRUCTIONS,
+                    optimizedUserContextPrompt = mission,
+                    estimatedPromptTokens = 380,
+                    tokenReductionPercent = 45,
+                    eligibleForFastPath = false,
+                    requiresStrictHitlGate = true,
+                    rationaleFr = "Requête complexe nécessitant raisonnement multi-étapes."
+                )
+            }
+            lower.contains("souvenir") || lower.contains("contact") || lower.contains("agenda") || lower.contains("message") -> {
+                DynamicPromptProfile(
+                    tier = PromptComplexityTier.CONTEXTUAL_SYNTHESIS,
+                    taskCategoryLabel = "Contextuel & Mémoire",
+                    systemInstructions = CONTEXTUAL_SYNTHESIS_INSTRUCTIONS,
+                    optimizedUserContextPrompt = mission,
+                    estimatedPromptTokens = 220,
+                    tokenReductionPercent = 65,
+                    eligibleForFastPath = false,
+                    requiresStrictHitlGate = false,
+                    rationaleFr = "Requête contextuelle exploitant les souvenirs RAG et contacts."
+                )
+            }
+            else -> {
+                DynamicPromptProfile(
+                    tier = PromptComplexityTier.BRIEF_DIRECT,
+                    taskCategoryLabel = "Direct & Rapide",
+                    systemInstructions = BRIEF_HIGH_LEVEL_INSTRUCTIONS,
+                    optimizedUserContextPrompt = mission,
+                    estimatedPromptTokens = 95,
+                    tokenReductionPercent = 82,
+                    eligibleForFastPath = true,
+                    requiresStrictHitlGate = false,
+                    rationaleFr = "Instructions concises pour réponse directe."
+                )
+            }
+        }
+    }
 }
