@@ -77,6 +77,9 @@
         <package android:name="com.google.android.apps.docs" />
         <package android:name="com.google.android.calendar" />
         <package android:name="com.valvesoftware.android.steam.community" />
+        <package android:name="com.google.android.apps.bard" />
+        <package android:name="com.google.android.googlequicksearchbox" />
+        <package android:name="com.openai.chatgpt" />
         <package android:name="org.telegram.messenger" />
         <package android:name="com.instagram.android" />
         <package android:name="com.discord" />
@@ -118,6 +121,19 @@
         <service
             android:name=".service.AppActionExecutor"
             android:exported="false" />
+
+        <service
+            android:name=".service.LiaAccessibilityService"
+            android:label="LIA Contrôle Total Écran &amp; Apps"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
     </application>
 
 </manifest>

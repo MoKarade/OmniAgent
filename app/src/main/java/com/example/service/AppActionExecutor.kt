@@ -153,7 +153,13 @@ class AppActionExecutor : Service() {
             "share_text:",
             "steam:",
             "geo:",
-            "google.navigation:"
+            "google.navigation:",
+            "screen_click:",
+            "screen_gesture:",
+            "screen_type:",
+            "global_action:",
+            "ai_prompt:",
+            "ui_macro:"
         )
 
         init {
@@ -525,18 +531,42 @@ class AppActionExecutor : Service() {
                 return ok
             }
 
-            // 0B. Steam
+            // 0B. Steam (avec navigation autonome dans Bibliothèque / Récemment joués via LiaAccessibilityService)
             if (uriOrPkg.startsWith("steam:")) {
                 val steamPkg = "com.valvesoftware.android.steam.community"
+                val subAction = uriOrPkg.removePrefix("steam:")
                 val ok = runCatching {
                     val launch = pm.getLaunchIntentForPackage(steamPkg)?.apply {
                         addFlags(DIRECT_LAUNCH_FLAGS)
                     }
                     if (launch != null) {
                         context.startActivity(launch)
+                        if (LiaAccessibilityService.instance != null) {
+                            LiaAccessibilityService.executeAutonomousMacroSequence(
+                                context = context,
+                                steps = buildList {
+                                    add(UiAutomationStep.WaitMs(1800L))
+                                    add(UiAutomationStep.ClickByTextOrId("Bibliothèque", 0.50f, 0.92f))
+                                    add(UiAutomationStep.WaitMs(900L))
+                                    add(UiAutomationStep.ClickByTextOrId("Library", 0.50f, 0.92f))
+                                    if (subAction.contains("recent") || subAction.contains("games")) {
+                                        add(UiAutomationStep.WaitMs(800L))
+                                        add(UiAutomationStep.SwipeGesture("SWIPE_UP"))
+                                    }
+                                }
+                            )
+                        }
                         true
                     } else {
-                        val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse("https://steamcommunity.com/my/games/?tab=recent")).apply {
+                        val webUrl = when {
+                            subAction.startsWith("search:") -> {
+                                val q = Uri.decode(subAction.removePrefix("search:"))
+                                "https://store.steampowered.com/search/?term=${Uri.encode(q)}"
+                            }
+                            subAction.contains("store") -> "https://store.steampowered.com/"
+                            else -> "https://steamcommunity.com/my/games/?tab=recent"
+                        }
+                        val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(webUrl)).apply {
                             addFlags(DIRECT_LAUNCH_FLAGS)
                         }
                         context.startActivity(webIntent)
@@ -551,6 +581,208 @@ class AppActionExecutor : Service() {
                     safetyValidationSummary = safetyValidationSummary
                 )
                 return ok
+            }
+
+            // 0C. Envoi de message / prompt à l'application Gemini ou ChatGPT sur le téléphone ("ai_prompt:gemini:..." ou "ai_prompt:chatgpt:...")
+            if (uriOrPkg.startsWith("ai_prompt:")) {
+                val payload = uriOrPkg.removePrefix("ai_prompt:")
+                val parts = payload.split(":", limit = 2)
+                val targetAi = parts.getOrNull(0)?.lowercase().orEmpty()
+                val promptText = Uri.decode(parts.getOrNull(1).orEmpty())
+
+                val candidatePkgs = when (targetAi) {
+                    "chatgpt", "openai" -> listOf("com.openai.chatgpt")
+                    else -> listOf("com.google.android.apps.bard", "com.google.android.googlequicksearchbox")
+                }
+                val fallbackWeb = when (targetAi) {
+                    "chatgpt", "openai" -> "https://chatgpt.com/?q=${Uri.encode(promptText)}"
+                    else -> "https://gemini.google.com/app"
+                }
+
+                // Copier systématiquement le prompt dans le presse-papiers
+                if (promptText.isNotBlank()) {
+                    runCatching {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("LIA_AI_Prompt", promptText))
+                    }
+                }
+
+                val installedPkg = candidatePkgs.firstOrNull { pkg ->
+                    runCatching { pm.getPackageInfo(pkg, 0); true }.getOrDefault(false)
+                }
+
+                val ok = runCatching {
+                    if (installedPkg != null) {
+                        // 1. Essayer ACTION_SEND vers Gemini/ChatGPT si un prompt est fourni
+                        var started = false
+                        if (promptText.isNotBlank()) {
+                            started = runCatching {
+                                val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    setPackage(installedPkg)
+                                    putExtra(Intent.EXTRA_TEXT, promptText)
+                                    addFlags(DIRECT_LAUNCH_FLAGS)
+                                }
+                                context.startActivity(sendIntent)
+                                true
+                            }.getOrDefault(false)
+                        }
+                        if (!started) {
+                            val launch = pm.getLaunchIntentForPackage(installedPkg)?.apply {
+                                addFlags(DIRECT_LAUNCH_FLAGS)
+                            }
+                            if (launch != null) {
+                                context.startActivity(launch)
+                                started = true
+                            }
+                        }
+                        // 2. Si le Service d'Accessibilité est actif, saisir automatiquement le prompt et cliquer sur Envoyer !
+                        if (started && promptText.isNotBlank() && LiaAccessibilityService.instance != null) {
+                            LiaAccessibilityService.executeAutonomousMacroSequence(
+                                context = context,
+                                steps = listOf(
+                                    UiAutomationStep.WaitMs(1600L),
+                                    UiAutomationStep.TypeTextIntoField(
+                                        text = promptText,
+                                        targetFieldHint = "",
+                                        autoClickSend = true
+                                    )
+                                )
+                            )
+                        }
+                        started
+                    } else {
+                        // Ouvrir Gemini Web ou l'assistant vocal Android avec le prompt déjà copié et saisi via Accessibilité
+                        val webIntent = Intent(Intent.ACTION_VIEW, Uri.parse(fallbackWeb)).apply {
+                            addFlags(DIRECT_LAUNCH_FLAGS)
+                        }
+                        context.startActivity(webIntent)
+                        if (promptText.isNotBlank() && LiaAccessibilityService.instance != null) {
+                            LiaAccessibilityService.executeAutonomousMacroSequence(
+                                context = context,
+                                steps = listOf(
+                                    UiAutomationStep.WaitMs(2400L),
+                                    UiAutomationStep.TypeTextIntoField(
+                                        text = promptText,
+                                        targetFieldHint = "",
+                                        autoClickSend = true
+                                    )
+                                )
+                            )
+                        }
+                        true
+                    }
+                }.getOrDefault(false)
+
+                recordExecutionLog(
+                    spec = spec,
+                    resolvedPackage = installedPkg ?: fallbackWeb,
+                    succeeded = ok,
+                    executedViaFastPathQueue = executedViaFastPathQueue,
+                    safetyValidationSummary = safetyValidationSummary
+                )
+                return ok
+            }
+
+            // 0D. Contrôle direct de l'écran via LiaAccessibilityService (Clic, Swipe, Saisie de texte, Action globale, Macro)
+            if (uriOrPkg.startsWith("screen_click:")) {
+                val targetText = Uri.decode(uriOrPkg.removePrefix("screen_click:")).trim()
+                val tLower = targetText.lowercase()
+                val (fx, fy) = when {
+                    tLower.contains("haut") -> 0.50f to 0.18f
+                    tLower.contains("bas") || tLower.contains("envoyer") -> 0.50f to 0.88f
+                    tLower.contains("gauche") -> 0.20f to 0.50f
+                    tLower.contains("droite") -> 0.82f to 0.50f
+                    else -> 0.50f to 0.50f
+                }
+                val ok = if (LiaAccessibilityService.instance != null) {
+                    LiaAccessibilityService.clickNodeByTextOrFallback(targetText, fx, fy)
+                } else {
+                    LiaAccessibilityService.openAccessibilitySettings(context)
+                }
+                recordExecutionLog(spec, "accessibility:click:$targetText", ok, executedViaFastPathQueue, safetyValidationSummary)
+                return ok
+            }
+
+            if (uriOrPkg.startsWith("screen_gesture:")) {
+                val direction = uriOrPkg.removePrefix("screen_gesture:").trim()
+                val ok = if (LiaAccessibilityService.instance != null) {
+                    LiaAccessibilityService.performSwipeGesture(direction)
+                } else {
+                    LiaAccessibilityService.openAccessibilitySettings(context)
+                }
+                recordExecutionLog(spec, "accessibility:gesture:$direction", ok, executedViaFastPathQueue, safetyValidationSummary)
+                return ok
+            }
+
+            if (uriOrPkg.startsWith("screen_type:")) {
+                val textToType = Uri.decode(uriOrPkg.removePrefix("screen_type:")).trim()
+                val ok = if (LiaAccessibilityService.instance != null) {
+                    LiaAccessibilityService.typeTextIntoFocusedOrFirstInputField(context, textToType, autoClickSend = true)
+                } else {
+                    runCatching {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+                        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("LIA_Screen_Input", textToType))
+                        true
+                    }.getOrDefault(false)
+                }
+                recordExecutionLog(spec, "accessibility:type", ok, executedViaFastPathQueue, safetyValidationSummary)
+                return ok
+            }
+
+            if (uriOrPkg.startsWith("global_action:")) {
+                val actionName = uriOrPkg.removePrefix("global_action:").trim()
+                val ok = if (LiaAccessibilityService.instance != null) {
+                    LiaAccessibilityService.performSystemGlobalAction(actionName)
+                } else if (actionName.equals("HOME", ignoreCase = true)) {
+                    runCatching {
+                        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                            addCategory(Intent.CATEGORY_HOME)
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        context.startActivity(homeIntent)
+                        true
+                    }.getOrDefault(false)
+                } else {
+                    LiaAccessibilityService.openAccessibilitySettings(context)
+                }
+                recordExecutionLog(spec, "accessibility:global:$actionName", ok, executedViaFastPathQueue, safetyValidationSummary)
+                return ok
+            }
+
+            if (uriOrPkg.startsWith("ui_macro:")) {
+                // Format: ui_macro:appNameOrPkg|clickOrTypeTarget|optionalTextToType
+                val rawMacro = uriOrPkg.removePrefix("ui_macro:")
+                val parts = rawMacro.split("|")
+                val appTarget = Uri.decode(parts.getOrNull(0).orEmpty())
+                val elementTarget = Uri.decode(parts.getOrNull(1).orEmpty())
+                val textPayload = Uri.decode(parts.getOrNull(2).orEmpty())
+
+                LiaAccessibilityService.executeAutonomousMacroSequence(
+                    context = context,
+                    steps = buildList {
+                        if (appTarget.isNotBlank()) {
+                            add(UiAutomationStep.OpenApp(appTarget, appTarget))
+                            add(UiAutomationStep.WaitMs(1800L))
+                        }
+                        if (elementTarget.isNotBlank()) {
+                            val eLower = elementTarget.lowercase()
+                            if (eLower.contains("scroll") || eLower.contains("descend") || eLower.contains("bas")) {
+                                add(UiAutomationStep.SwipeGesture("SWIPE_UP"))
+                            } else if (eLower.contains("monte") || eLower.contains("haut")) {
+                                add(UiAutomationStep.SwipeGesture("SWIPE_DOWN"))
+                            } else {
+                                add(UiAutomationStep.ClickByTextOrId(elementTarget))
+                            }
+                            add(UiAutomationStep.WaitMs(900L))
+                        }
+                        if (textPayload.isNotBlank()) {
+                            add(UiAutomationStep.TypeTextIntoField(textPayload, elementTarget, autoClickSend = true))
+                        }
+                    }
+                )
+                recordExecutionLog(spec, "accessibility:macro:$appTarget", true, executedViaFastPathQueue, safetyValidationSummary)
+                return true
             }
 
             return runCatching {

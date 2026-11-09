@@ -1996,6 +1996,16 @@ private fun AiPreferencesSectionContent(
                             onClick = onTriggerSystemBubble,
                             modifier = Modifier.testTag("settings_floating_bubble_button")
                         )
+
+                        val isAccessActive = com.example.service.LiaAccessibilityService.isAccessibilityPermissionEnabled(context)
+                        GlassNeumorphicPill(
+                            text = if (isAccessActive) "Accessibilité LIA (Active ✓)" else "Activer Contrôle Total Écran",
+                            emoji = "🎮",
+                            selected = isAccessActive,
+                            accentColor = ActionEmerald,
+                            onClick = { com.example.service.LiaAccessibilityService.openAccessibilitySettings(context) },
+                            modifier = Modifier.testTag("settings_accessibility_service_button")
+                        )
                     }
                 }
             }

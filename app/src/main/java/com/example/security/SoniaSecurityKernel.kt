@@ -426,7 +426,13 @@ object SoniaSecurityKernel {
             "app_search:",
             "calendar_insert:",
             "share_text:",
-            "steam:"
+            "steam:",
+            "screen_click:",
+            "screen_gesture:",
+            "screen_type:",
+            "global_action:",
+            "ai_prompt:",
+            "ui_macro:"
         )
         if (safePrefixes.any { lower.startsWith(it) }) {
             return ActionTargetSafetyVerdict.SAFE_APP_LAUNCH

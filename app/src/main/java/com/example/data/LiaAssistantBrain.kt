@@ -329,17 +329,43 @@ object LiaAssistantBrain {
             )
         }
 
+        // 0B. Lecture des éléments visibles sur l'écran ("que vois-tu sur l'écran", "lis l'écran", "qu'est-ce qu'il y a sur l'écran")
+        if (lower.contains("que vois-tu") || lower.contains("lis l'écran") || lower.contains("lis l'ecran") ||
+            (lower.contains("écran") && (lower.contains("qu'est-ce") || lower.contains("affiche")))
+        ) {
+            val elements = com.example.service.LiaAccessibilityService.readCurrentScreenSnapshot()
+            val activePkg = com.example.service.LiaAccessibilityService.status.value.activeWindowPackage
+            return if (elements.isNotEmpty()) {
+                val formatted = elements.take(15).joinToString("\n") { "• « **$it** »" }
+                LiaBrainTurnOutcome(
+                    replyText = "👁️ **Éléments lus en direct sur votre écran** (${activePkg.ifBlank { "Application active" }}) :\n\n$formatted\n\n" +
+                        "💡 *Dites-moi « Clique sur [texte] » ou « Scrolle vers le bas » pour interagir !*",
+                    isPhoneAction = true,
+                    learnedBadge = "👁️ ${elements.size} élément(s) lus",
+                    quickReplies = elements.take(3).map { "Clique sur $it" } + listOf("Scrolle vers le bas")
+                )
+            } else {
+                val action = LiaAppLaunchAction("Activer l'Accessibilité LIA", "settings:android.settings.ACCESSIBILITY_SETTINGS", "home_launcher", 25L)
+                LiaBrainTurnOutcome(
+                    replyText = "👁️ Pour que je puisse lire tous les textes, jeux et boutons de vos applications et cliquer à votre place, activez **« LIA Contrôle Total Écran & Apps »** dans les paramètres d'Accessibilité Android.",
+                    appLaunchAction = action,
+                    isPhoneAction = true,
+                    learnedBadge = "⚙️ Accessibilité requise"
+                )
+            }
+        }
+
         // 1. Défilement / Scroll / Swipe (Bas, Haut, Gauche, Droite)
-        val isScrollDown = lower == "scrolle vers le bas" || lower == "scroll vers le bas" ||
-            lower == "scrolle en bas" || lower == "descends sur l'écran" || lower == "descends sur la page" ||
-            lower == "défile vers le bas" || lower == "defile vers le bas" || lower == "swipe up"
-        val isScrollUp = lower == "scrolle vers le haut" || lower == "scroll vers le haut" ||
-            lower == "scrolle en haut" || lower == "monte sur l'écran" || lower == "monte sur la page" ||
-            lower == "défile vers le haut" || lower == "defile vers le haut" || lower == "swipe down"
-        val isSwipeLeft = lower == "balaye à gauche" || lower == "balaye vers la gauche" ||
-            lower == "swipe à gauche" || lower == "swipe left" || lower == "glisse à gauche"
-        val isSwipeRight = lower == "balaye à droite" || lower == "balaye vers la droite" ||
-            lower == "swipe à droite" || lower == "swipe right" || lower == "glisse à droite"
+        val isScrollDown = lower.contains("scrolle vers le bas") || lower.contains("scroll vers le bas") ||
+            lower == "scrolle en bas" || lower == "scrolle" || lower.contains("descends sur l'écran") || lower.contains("descends sur la page") ||
+            lower.contains("défile vers le bas") || lower.contains("defile vers le bas") || lower == "swipe up"
+        val isScrollUp = lower.contains("scrolle vers le haut") || lower.contains("scroll vers le haut") ||
+            lower == "scrolle en haut" || lower.contains("monte sur l'écran") || lower.contains("monte sur la page") ||
+            lower.contains("défile vers le haut") || lower.contains("defile vers le haut") || lower == "swipe down"
+        val isSwipeLeft = lower.contains("balaye à gauche") || lower.contains("balaye vers la gauche") ||
+            lower.contains("swipe à gauche") || lower == "swipe left" || lower.contains("glisse à gauche")
+        val isSwipeRight = lower.contains("balaye à droite") || lower.contains("balaye vers la droite") ||
+            lower.contains("swipe à droite") || lower == "swipe right" || lower.contains("glisse à droite")
 
         if (isScrollDown || isScrollUp || isSwipeLeft || isSwipeRight) {
             val (dirLabel, code) = when {
@@ -348,15 +374,18 @@ object LiaAssistantBrain {
                 isSwipeLeft -> "Balayage vers la gauche (Swipe Left)" to "SWIPE_LEFT"
                 else -> "Balayage vers la droite (Swipe Right)" to "SWIPE_RIGHT"
             }
+            val targetUri = "screen_gesture:$code"
+            val action = LiaAppLaunchAction(dirLabel, targetUri, "home_launcher", 25L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = trimmed,
                 actionTitle = "Geste écran : $dirLabel",
-                targetPackageOrScreen = "screen_gesture:$code",
+                targetPackageOrScreen = targetUri,
                 stepsSaved = 2,
                 latencyMs = 25L
             )
             return LiaBrainTurnOutcome(
                 replyText = "↕️ **Geste exécuté sur l'écran** : **$dirLabel** (`dispatchGesture`).",
+                appLaunchAction = action,
                 isPhoneAction = true,
                 learnedBadge = "🧠 Geste appris : $dirLabel",
                 quickReplies = listOf("Scrolle vers le bas", "Scrolle vers le haut", "Clique au milieu de l'écran", "Bouton retour")
@@ -378,17 +407,20 @@ object LiaAssistantBrain {
                     tLower.contains("bas") || tLower.contains("envoyer") -> "Zone basse / Action (0.50, 0.85)"
                     tLower.contains("gauche") -> "Zone gauche (0.20, 0.50)"
                     tLower.contains("droite") -> "Zone droite (0.82, 0.50)"
-                    else -> "Cible « $targetDesc » (0.50, 0.50)"
+                    else -> "Élément « $targetDesc »"
                 }
+                val targetUri = "screen_click:${android.net.Uri.encode(targetDesc)}"
+                val action = LiaAppLaunchAction("Clic sur « $targetDesc »", targetUri, "home_launcher", 20L)
                 LiaMemoryAndHistoryStore.recordLearnedShortcut(
                     triggerPhrase = "Cliquer : ${targetDesc.take(22)}",
                     actionTitle = "Clic écran sur « $targetDesc »",
-                    targetPackageOrScreen = "screen_click:$targetDesc",
+                    targetPackageOrScreen = targetUri,
                     stepsSaved = 2,
                     latencyMs = 20L
                 )
                 return LiaBrainTurnOutcome(
                     replyText = "👆 **Clic exécuté sur l'écran** : **« $targetDesc »** ($zoneLabel).",
+                    appLaunchAction = action,
                     isPhoneAction = true,
                     learnedBadge = "👆 Clic : ${targetDesc.take(22)}",
                     quickReplies = listOf("Scrolle vers le bas", "Clique sur Envoyer", "Bouton retour")
@@ -403,30 +435,27 @@ object LiaAssistantBrain {
         )
         typeTextRegex.find(trimmed)?.let { m ->
             val textToType = m.groupValues[1].trim().removeSurrounding("\"").removeSurrounding("«", "»")
-            val ctx = LiaMemoryAndHistoryStore.getApplicationContextOrNull()
-            if (ctx != null && textToType.isNotBlank()) {
-                runCatching {
-                    val clipboard = ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
-                    clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("LIA_Screen_Input", textToType))
-                }
-            }
+            val targetUri = "screen_type:${android.net.Uri.encode(textToType)}"
+            val action = LiaAppLaunchAction("Saisir « ${textToType.take(20)} »", targetUri, "home_launcher", 25L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "Saisir : ${textToType.take(18)}",
                 actionTitle = "Saisie écran « $textToType »",
-                targetPackageOrScreen = "screen_type:$textToType",
+                targetPackageOrScreen = targetUri,
                 stepsSaved = 3,
                 latencyMs = 25L
             )
             return LiaBrainTurnOutcome(
-                replyText = "⌨️ **Texte injecté sur l'écran et copié dans le presse-papiers** :\n« **$textToType** »",
+                replyText = "⌨️ **Texte saisi dans le champ à l'écran et copié dans le presse-papiers** :\n« **$textToType** »",
+                appLaunchAction = action,
                 isPhoneAction = true,
                 learnedBadge = "⌨️ Texte saisi : ${textToType.take(18)}",
                 quickReplies = listOf("Clique sur Envoyer", "Bouton retour")
             )
         }
 
-        // 4. Actions système globales (Retour, Accueil, Notifications, Applications récentes)
+        // 4. Actions système globales (Retour, Accueil, Notifications, Applications récentes, Capture d'écran)
         if (lower == "bouton retour" || lower == "retour arrière" || lower == "reviens en arrière" || lower == "appuie sur retour") {
+            val action = LiaAppLaunchAction("Bouton Retour", "global_action:BACK", "home_launcher", 15L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "Bouton retour",
                 actionTitle = "Navigation Système : Retour (BACK)",
@@ -436,6 +465,7 @@ object LiaAssistantBrain {
             )
             return LiaBrainTurnOutcome(
                 replyText = "🔙 **Action système exécutée** : **Retour en arrière (`GLOBAL_ACTION_BACK`)**.",
+                appLaunchAction = action,
                 isPhoneAction = true,
                 targetVirtualScreenId = "home_launcher",
                 learnedBadge = "🔙 Action : Retour"
@@ -443,6 +473,7 @@ object LiaAssistantBrain {
         }
 
         if (lower == "écran d'accueil" || lower == "ecran d'accueil" || lower == "va à l'accueil" || lower == "retour à l'accueil") {
+            val action = LiaAppLaunchAction("Écran d'accueil", "global_action:HOME", "home_launcher", 15L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "Écran d'accueil",
                 actionTitle = "Navigation Système : Accueil (HOME)",
@@ -452,6 +483,7 @@ object LiaAssistantBrain {
             )
             return LiaBrainTurnOutcome(
                 replyText = "🏠 **Action système exécutée** : **Retour à l'écran d'accueil (`GLOBAL_ACTION_HOME`)**.",
+                appLaunchAction = action,
                 isPhoneAction = true,
                 targetVirtualScreenId = "home_launcher",
                 learnedBadge = "🏠 Action : Accueil"
@@ -459,10 +491,22 @@ object LiaAssistantBrain {
         }
 
         if (lower == "ouvre les notifications" || lower == "barre de notifications" || lower == "affiche les notifications") {
+            val action = LiaAppLaunchAction("Volet Notifications", "global_action:NOTIFICATIONS", "home_launcher", 15L)
             return LiaBrainTurnOutcome(
                 replyText = "🔔 **Action système exécutée** : **Ouverture du volet de notifications Android (`GLOBAL_ACTION_NOTIFICATIONS`)**.",
+                appLaunchAction = action,
                 isPhoneAction = true,
                 learnedBadge = "🔔 Volet Notifications"
+            )
+        }
+
+        if (lower.contains("capture d'écran") || lower.contains("capture d'ecran") || lower == "screenshot") {
+            val action = LiaAppLaunchAction("Capture d'écran", "global_action:SCREENSHOT", "home_launcher", 15L)
+            return LiaBrainTurnOutcome(
+                replyText = "📸 **Action système exécutée** : **Capture d'écran (`GLOBAL_ACTION_TAKE_SCREENSHOT`)**.",
+                appLaunchAction = action,
+                isPhoneAction = true,
+                learnedBadge = "📸 Capture d'écran"
             )
         }
 
@@ -1138,6 +1182,19 @@ object LiaAssistantBrain {
                         learnedBadge = "${channel.emoji} ${channel.displayName} prêt"
                     )
                 }
+                if (clarificationType.startsWith("ASK_AI_APP_PROMPT:")) {
+                    val aiKey = clarificationType.removePrefix("ASK_AI_APP_PROMPT:").ifBlank { "gemini" }
+                    val aiDisplay = if (aiKey == "chatgpt") "ChatGPT" else "Google Gemini"
+                    val encodedPrompt = android.net.Uri.encode(cleaned)
+                    val targetUri = "ai_prompt:$aiKey:$encodedPrompt"
+                    val action = LiaAppLaunchAction("$aiDisplay (« ${cleaned.take(18)} »)", targetUri, "home_launcher", 35L)
+                    return LiaBrainTurnOutcome(
+                        replyText = "🤖 **J'ouvre $aiDisplay et j'y envoie votre message** :\n« *$cleaned* »",
+                        appLaunchAction = action,
+                        isPhoneAction = true,
+                        learnedBadge = "🤖 $aiDisplay envoyé"
+                    )
+                }
                 null
             }
         }
@@ -1237,13 +1294,8 @@ object LiaAssistantBrain {
             }
         }
 
-        // 2. Recherche autonome dans Steam ("retrouve le dernier jeu auquel j'ai joué dans steam", "dernier jeu steam", "activité récente steam")
-        if (lower.contains("steam") && (
-                lower.contains("jeu") || lower.contains("joué") || lower.contains("joue") ||
-                    lower.contains("retrouve") || lower.contains("trouve") || lower.contains("dernier") ||
-                    lower.contains("bibliothèque") || lower.contains("bibliotheque") || lower.contains("récemment")
-                )
-        ) {
+        // 2. Navigation et recherche autonome dans Steam ("aller dans mon application steam pour voir les jeux", "voir mes jeux sur steam", "retrouve le dernier jeu auquel j'ai joué dans steam")
+        if (lower.contains("steam")) {
             val savedSteamGame = snap.souvenirs.firstOrNull {
                 it.subjectKey == "last_steam_game" || it.searchTags.contains("steam")
             }?.detailValue
@@ -1255,42 +1307,119 @@ object LiaAssistantBrain {
                 it.packageName.contains("steam", ignoreCase = true) || it.appLabel.contains("steam", ignoreCase = true)
             }
 
+            // Extraire une recherche de jeu spécifique si l'utilisateur dit "cherche Elden Ring sur Steam"
+            val specificSearchRegex = Regex("(?:cherche|recherche|trouve|acheter)\\s+(.+?)\\s+(?:dans|sur)\\s+steam", RegexOption.IGNORE_CASE)
+            val specificGame = specificSearchRegex.find(input)?.groupValues?.getOrNull(1)?.trim()
+                ?.takeIf { !it.lowercase().contains("dernier jeu") && !it.lowercase().contains("mes jeux") && !it.lowercase().contains("les jeux") }
+
+            val targetUri = if (!specificGame.isNullOrBlank()) {
+                "steam:search:${android.net.Uri.encode(specificGame)}"
+            } else if (lower.contains("magasin") || lower.contains("boutique") || lower.contains("store") || lower.contains("promo")) {
+                "steam:store"
+            } else {
+                "steam:recent_games"
+            }
+
             val gameDisplay = when {
+                !specificGame.isNullOrBlank() ->
+                    "Recherche directe du jeu **$specificGame** dans le catalogue **Steam**"
                 !savedSteamGame.isNullOrBlank() ->
-                    "**$savedSteamGame** *(retrouvé dans votre activité Steam mémorisée)*"
+                    "**$savedSteamGame** *(retrouvé dans votre bibliothèque Steam mémorisée)*"
                 steamUsage != null ->
-                    "**Activité Steam détectée** *(dernière session ouverte à ${steamUsage.lastTimeFormatted})*"
+                    "**Bibliothèque Steam active** *(dernière session ouverte à ${steamUsage.lastTimeFormatted})*"
                 steamInstalled != null ->
-                    "**Application Steam détectée sur le téléphone** — ouverture directe de l'onglet « Récemment joués »"
+                    "**Application Steam détectée sur le téléphone** — ouverture et clic automatique sur **Bibliothèque ➔ Jeux**"
                 else ->
-                    "**Accès direct à votre profil Steam › Jeux récemment joués**"
+                    "**Ouverture directe de votre Bibliothèque Steam & Jeux récents**"
             }
 
             val action = LiaAppLaunchAction(
-                appLabel = "Steam • Récemment joués",
-                packageName = "steam:recent_games",
+                appLabel = if (!specificGame.isNullOrBlank()) "Steam ($specificGame)" else "Steam • Bibliothèque & Jeux",
+                packageName = targetUri,
                 targetScreenId = "steam_recent_games",
                 learnedSpeedMs = 35L
             )
 
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
-                triggerPhrase = "🎮 Dernier jeu Steam",
-                actionTitle = "Steam ➔ Bibliothèque ➔ Récemment joués",
-                targetPackageOrScreen = "steam:recent_games",
+                triggerPhrase = "🎮 Voir mes jeux Steam",
+                actionTitle = "Steam ➔ Bibliothèque ➔ Jeux",
+                targetPackageOrScreen = targetUri,
                 stepsSaved = 4,
                 latencyMs = 35L
             )
 
             return LiaBrainTurnOutcome(
-                replyText = "🎮 **Navigation autonome dans Steam terminée** :\n\n" +
-                    "1. **Ouverture** de **Steam**\n" +
-                    "2. **Clic automatique** sur **Bibliothèque ➔ Trier par : Récemment joués**\n" +
-                    "3. **Résultat trouvé** : $gameDisplay\n\n" +
-                    "*(Astuce : dites « Mon dernier jeu sur Steam est [Nom du jeu] » si vous souhaitez que je le retienne aussi hors-ligne.)*",
+                replyText = "🎮 **Navigation autonome dans Steam lancée** :\n\n" +
+                    "1. **Ouverture** de l'application **Steam**\n" +
+                    "2. **Action écran automatique (`LiaAccessibilityService`)** : Clic sur **Bibliothèque ➔ Jeux** et défilement de la liste\n" +
+                    "3. **Statut** : $gameDisplay\n\n" +
+                    "*(Vous pouvez aussi me dire « Scrolle vers le bas » ou « Clique sur [Nom du jeu] » une fois dans Steam !)*",
                 appLaunchAction = action,
                 isPhoneAction = true,
                 targetVirtualScreenId = "steam_recent_games",
-                learnedBadge = "🎮 Steam • Récemment joués"
+                learnedBadge = "🎮 Steam • Bibliothèque",
+                quickReplies = listOf(
+                    "Scrolle vers le bas",
+                    "Clique sur Bibliothèque",
+                    "Lis l'écran"
+                )
+            )
+        }
+
+        // 2A-bis. Envoyer un message / prompt à l'application Gemini ou ChatGPT sur le téléphone ("envoie un message à gemini sur mon téléphone", "demande à l'application gemini ...", "écris à chatgpt ...")
+        val isAiAppTarget = (lower.contains("gemini") || lower.contains("chatgpt") || lower.contains("chat gpt")) &&
+            (lower.contains("message") || lower.contains("envoie") || lower.contains("envoyer") ||
+                lower.contains("écris") || lower.contains("ecris") || lower.contains("demande") ||
+                lower.contains("ouvre") || lower.contains("aller dans") || lower.contains("va dans"))
+        if (isAiAppTarget) {
+            val isChatGpt = lower.contains("chatgpt") || lower.contains("chat gpt")
+            val aiKey = if (isChatGpt) "chatgpt" else "gemini"
+            val aiDisplay = if (isChatGpt) "ChatGPT" else "Google Gemini"
+
+            val extractedPrompt = extractMessageBodyFromPrompt(input, aiDisplay)
+                ?: Regex("(?:demande(?:-lui)?|dis(?:-lui)?|écris(?:-lui)?|ecris(?:-lui)?|avec\\s+le\\s+message)\\s+(.+)$", RegexOption.IGNORE_CASE)
+                    .find(input)?.groupValues?.getOrNull(1)?.trim()
+                ?: ""
+
+            val cleanPrompt = extractedPrompt
+                .replace(Regex("^(?:à|a)\\s+(?:gemini|chatgpt|chat\\s+gpt)\\s*(?:sur\\s+mon\\s+t[ée]l[ée]phone)?\\s*[:\\-]?\\s*", RegexOption.IGNORE_CASE), "")
+                .trim()
+
+            val encodedPrompt = android.net.Uri.encode(cleanPrompt)
+            val targetUri = "ai_prompt:$aiKey:$encodedPrompt"
+            val actionLabel = if (cleanPrompt.isNotBlank()) "$aiDisplay (« ${cleanPrompt.take(18)} »)" else "Ouvrir $aiDisplay"
+            val action = LiaAppLaunchAction(actionLabel, targetUri, "home_launcher", 35L)
+
+            LiaMemoryAndHistoryStore.recordLearnedShortcut(
+                triggerPhrase = "🤖 Message à $aiDisplay",
+                actionTitle = "Envoyer un prompt à $aiDisplay",
+                targetPackageOrScreen = targetUri,
+                stepsSaved = 4,
+                latencyMs = 35L
+            )
+
+            val reply = if (cleanPrompt.isNotBlank()) {
+                "🤖 **J'ouvre l'application $aiDisplay sur votre téléphone et j'y envoie votre message** :\n« *$cleanPrompt* »\n\n" +
+                    "• **Saisie automatique (`LiaAccessibilityService`)** : Le texte est injecté dans le champ de prompt de $aiDisplay et soumis automatiquement.\n" +
+                    "• **Presse-papiers** : Le message est également copié dans votre presse-papiers."
+            } else {
+                LiaMemoryAndHistoryStore.setPendingFollowUp(
+                    LiaPendingFollowUp.WaitingForGeneralClarification("ASK_AI_APP_PROMPT:$aiKey")
+                )
+                "🤖 **J'ouvre l'application $aiDisplay sur votre téléphone**.\n\n" +
+                    "💡 *Quel message ou question souhaitez-vous que j'écrive et envoie dans $aiDisplay pour vous ?*"
+            }
+
+            return LiaBrainTurnOutcome(
+                replyText = reply,
+                appLaunchAction = action,
+                isPhoneAction = true,
+                learnedBadge = "🤖 $aiDisplay prêt",
+                quickReplies = listOf(
+                    "Explique-moi les trous noirs simplement",
+                    "Donne-moi une idée de repas rapide",
+                    "Résume les actualités tech du jour"
+                )
             )
         }
 
@@ -1330,7 +1459,34 @@ object LiaAssistantBrain {
             )
         }
 
-        // 3. Action autonome multi-étapes générique ("va dans [App] et clique sur...", "retrouve ... dans [App]")
+        // 3. Action autonome multi-étapes universelle ("va dans [App] et clique sur [X]", "ouvre [App] et tape [Y]", "va dans [App] pour voir [X]")
+        val chainRegex = Regex(
+            "^(?:va\\s+dans|aller\\s+dans|ouvre|ouvrir|lance)\\s+(?:mon\\s+application\\s+|l'application\\s+|l'app\\s+)?([A-Za-zÀ-ÿ0-9 ._-]+?)\\s+(?:et\\s+|pour\\s+)(?:clique(?:r)?\\s+sur|appuie\\s+sur|voir|regarder|chercher|taper|écrire|ecrire)\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        )
+        chainRegex.find(input)?.let { m ->
+            val targetAppName = m.groupValues[1].trim()
+            val subTask = m.groupValues[2].trim()
+            val installedMatch = LiaUniversalAppsAndGoogleHub.findBestMatchingInstalledApp(targetAppName)
+            val appPkgOrName = installedMatch?.packageName ?: targetAppName
+            val appLabel = installedMatch?.appLabel ?: targetAppName.replaceFirstChar { it.uppercase() }
+
+            val macroUri = "ui_macro:${android.net.Uri.encode(appPkgOrName)}|${android.net.Uri.encode(subTask)}|"
+            val action = LiaAppLaunchAction("$appLabel ➔ $subTask", macroUri, "home_launcher", 35L)
+
+            return LiaBrainTurnOutcome(
+                replyText = "⚡ **Macro autonome multi-étapes exécutée dans $appLabel** :\n\n" +
+                    "1. **Ouverture** de **$appLabel**\n" +
+                    "2. **Interaction Accessibilité (`LiaAccessibilityService`)** : Ciblage et clic automatique sur **« $subTask »**\n\n" +
+                    "*(Vous pouvez enchaîner avec « Scrolle vers le bas », « Clique sur ... » ou « Lis l'écran »)*",
+                appLaunchAction = action,
+                isPhoneAction = true,
+                learnedBadge = "⚡ $appLabel ➔ $subTask",
+                quickReplies = listOf("Scrolle vers le bas", "Lis l'écran", "Bouton retour")
+            )
+        }
+
+        // 4. Recherche dans une application ("retrouve ... dans [App]")
         val multiStepAppRegex = Regex(
             "(?:retrouve|trouve|cherche|va\\s+dans|ouvre|regarde)\\s+(.+?)\\s+(?:dans|sur)\\s+([A-Za-zÀ-ÿ0-9 ]+)$",
             RegexOption.IGNORE_CASE
@@ -1353,20 +1509,21 @@ object LiaAssistantBrain {
                 !lowerApp.contains("google")
             ) {
                 val installedMatch = LiaUniversalAppsAndGoogleHub.findBestMatchingInstalledApp(targetAppName)
-                val resolvedTarget = if (installedMatch != null) {
-                    LiaAppLaunchAction(installedMatch.appLabel, installedMatch.packageName, "home_launcher", 35L)
-                } else {
-                    resolveAppLaunchTarget(targetAppName)
-                }
+                val appPkgOrName = installedMatch?.packageName ?: targetAppName
+                val appLabel = installedMatch?.appLabel ?: targetAppName.replaceFirstChar { it.uppercase() }
+                val macroUri = "ui_macro:${android.net.Uri.encode(appPkgOrName)}|${android.net.Uri.encode(whatToFind)}|"
+                val resolvedTarget = LiaAppLaunchAction("$appLabel ➔ $whatToFind", macroUri, "home_launcher", 35L)
+
                 recordLearnedAppPreference(resolvedTarget, input)
                 return LiaBrainTurnOutcome(
-                    replyText = "⚡ **Exécution autonome dans ${resolvedTarget.appLabel}** :\n\n" +
-                        "1. **Ouverture** de **${resolvedTarget.appLabel}**\n" +
-                        "2. **Navigation & Clic** vers **« $whatToFind »**\n" +
+                    replyText = "⚡ **Exécution autonome dans $appLabel** :\n\n" +
+                        "1. **Ouverture** de **$appLabel**\n" +
+                        "2. **Navigation & Clic (`LiaAccessibilityService`)** vers **« $whatToFind »**\n" +
                         "3. **Application lancée** directement sur votre écran.",
                     appLaunchAction = resolvedTarget,
                     isPhoneAction = true,
-                    learnedBadge = "⚡ ${resolvedTarget.appLabel} ➔ $whatToFind"
+                    learnedBadge = "⚡ $appLabel ➔ $whatToFind",
+                    quickReplies = listOf("Scrolle vers le bas", "Lis l'écran", "Bouton retour")
                 )
             }
         }
@@ -2886,10 +3043,14 @@ object LiaAssistantBrain {
      * formulée librement, extrait l'action et la valide via le pare-feu Zero-Trust (`SEC-01`).
      */
     private fun extractEmbeddedActionFromAiReply(rawReply: String): Pair<String, LiaAppLaunchAction?> {
-        val actionTagRegex = Regex("\\[ACTION:([^:\\]]+):([^\\]]+)\\]")
+        val actionTagRegex = Regex("\\[ACTION:(.+?)\\]")
         val match = actionTagRegex.find(rawReply) ?: return rawReply to null
-        val targetRaw = match.groupValues[1].trim()
-        val labelRaw = match.groupValues[2].trim()
+        val inner = match.groupValues[1].trim()
+        val lastColon = inner.lastIndexOf(':')
+        if (lastColon <= 0) return rawReply to null
+
+        val targetRaw = inner.substring(0, lastColon).trim()
+        val labelRaw = inner.substring(lastColon + 1).trim()
         val cleanedReply = rawReply.replace(match.value, "").trim()
 
         // SEC-01: Reject any unsafe or unapproved scheme before constructing an action
@@ -2919,7 +3080,7 @@ object LiaAssistantBrain {
             aiPrefs.responseToneStyle == com.example.service.LiaResponseToneStyle.ULTRA_BRIEF
         val recentMsgs = snap.activeMessages.dropLast(1).takeLast(if (isBriefMode) 3 else 8)
         val effectiveSystemInstruction = optimizedSystemInstruction?.ifBlank { null }
-            ?: "Tu es LIA, assistante IA personnelle intelligente sur Android. Réponds directement en français dans un JSON {\"reply\": \"...\"} en exploitant avec précision les souvenirs de l'utilisateur."
+            ?: "Tu es LIA, assistante IA personnelle intelligente sur Android dotée d'un service d'Accessibilité capable de tout contrôler sur le téléphone (cliquer, scroller, taper du texte, ouvrir Steam, envoyer un prompt à Gemini, écrire sur Messenger/WhatsApp, chercher sur Maps). Réponds directement en français dans un JSON {\"reply\": \"...\"}."
 
         // Select the official 2026 Gemini model based on user reasoning preferences
         val selectedModel = when (aiPrefs.reasoningDepthMode) {
@@ -2956,8 +3117,14 @@ object LiaAssistantBrain {
             appendLine("Message actuel de l'utilisateur : $userPrompt")
             appendLine(
                 "Réponds directement, intelligemment et naturellement en français en tant que LIA. " +
-                    "Si l'utilisateur demande d'ouvrir une application ou de lancer une recherche/action sur le téléphone, " +
-                    "ajoute à la toute fin de ta réponse la balise [ACTION:nom_ou_uri:Nom de l'application] (par exemple [ACTION:Spotify:Spotify] ou [ACTION:https://www.google.com/search?q=meteo:Recherche Météo])."
+                    "Si l'utilisateur demande d'effectuer une action sur le téléphone, ajoute à la toute fin de ta réponse la balise [ACTION:cible:Libellé] :\n" +
+                    "- Cliquer sur l'écran : [ACTION:screen_click:TexteDuBouton:Clic sur TexteDuBouton]\n" +
+                    "- Scroller / glisser : [ACTION:screen_gesture:SWIPE_UP:Défiler vers le bas]\n" +
+                    "- Saisir du texte : [ACTION:screen_type:TexteASaisir:Saisir le texte]\n" +
+                    "- Voir les jeux Steam : [ACTION:steam:recent_games:Steam Bibliothèque]\n" +
+                    "- Envoyer un prompt à Gemini : [ACTION:ai_prompt:gemini:MonPrompt:Google Gemini]\n" +
+                    "- Macro multi-étapes dans une app : [ACTION:ui_macro:NomApp|BoutonACliquer|:Action dans NomApp]\n" +
+                    "- Ouvrir une app ou chercher sur Maps : [ACTION:geo:0,0?q=Lieu:Google Maps]"
             )
         }
 

@@ -27,4 +27,5 @@
     <string name="btn_google_sign_in">Connexion Google</string>
     <string name="btn_cloud_sync">Cloud</string>
     <string name="btn_sign_out">Compte</string>
+    <string name="accessibility_service_description">Permet à LIA de cliquer, faire défiler l\'écran, saisir du texte et naviguer de façon autonome dans toutes vos applications (Steam, Gemini, Messenger, Maps, etc.).</string>
 </resources>
