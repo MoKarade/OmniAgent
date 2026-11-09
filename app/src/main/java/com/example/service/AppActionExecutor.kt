@@ -946,6 +946,26 @@ class AppActionExecutor : Service() {
                         }
                     }
 
+                    LiaClassifiedIntentType.SEND_MESSAGE -> {
+                        val body = spec.extractedParameters["body"].orEmpty()
+                        val recipient = spec.extractedParameters["recipient"].orEmpty()
+                        if (uriOrPkg.startsWith("smsto:") || uriOrPkg.startsWith("sms:")) {
+                            Intent(Intent.ACTION_SENDTO, Uri.parse(uriOrPkg)).apply {
+                                if (body.isNotBlank()) putExtra("sms_body", body)
+                                bindBestPackageViaPackageManager(pm, this, spec.targetPackage.ifBlank { "com.google.android.apps.messaging" })
+                            }
+                        } else {
+                            Intent(Intent.ACTION_SEND).apply {
+                                type = "text/plain"
+                                if (body.isNotBlank()) putExtra(Intent.EXTRA_TEXT, body)
+                                if (recipient.isNotBlank()) putExtra(Intent.EXTRA_TITLE, recipient)
+                                if (spec.targetPackage.isNotBlank()) {
+                                    bindBestPackageViaPackageManager(pm, this, spec.targetPackage)
+                                }
+                            }
+                        }
+                    }
+
                     LiaClassifiedIntentType.MAPS_NAVIGATION -> {
                         Intent(Intent.ACTION_VIEW, Uri.parse(uriOrPkg)).apply {
                             bindBestPackageViaPackageManager(pm, this, "com.google.android.apps.maps")
