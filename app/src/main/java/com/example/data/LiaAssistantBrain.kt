@@ -2796,7 +2796,7 @@ object LiaAssistantBrain {
             )
         }
 
-        // 7. Commande directe d'ouverture d'une application précise ("Ouvre YouTube", "Lance Gmail", ou "YouTube")
+        // 7. Commande directe d'ouverture d'une application précise ("Ouvre YouTube", "Va dans mon application Toyota", "Lance Gmail", ou "YouTube")
         val isExplicitOpenVerb = lower.startsWith("ouvre ") ||
             lower.startsWith("ouvrir ") ||
             lower.startsWith("lance ") ||
@@ -2805,10 +2805,13 @@ object LiaAssistantBrain {
             lower.startsWith("démarrer ") ||
             lower.contains("ouvre l'application") ||
             lower.contains("ouvrir l'application") ||
+            lower.contains("ouvre mon application") ||
             lower.contains("ouvre l'app") ||
             lower.contains("ouvrir l'app") ||
             lower.startsWith("va sur ") ||
-            lower.startsWith("aller sur ")
+            lower.startsWith("aller sur ") ||
+            lower.startsWith("va dans ") ||
+            lower.startsWith("aller dans ")
 
         val directAppNameMatch = lower in setOf(
             "gmail", "google agenda", "agenda", "calendrier", "google calendar",
@@ -2821,7 +2824,7 @@ object LiaAssistantBrain {
         if (!isExplicitOpenVerb && !directAppNameMatch) return null
 
         val requestedAppRaw = input
-            .replace(Regex("^(?:ouvre l'application|ouvrir l'application|ouvre l'app|ouvrir l'app|ouvre|ouvrir|lance|lancer|démarre|démarrer|va sur|aller sur)\\s+", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("^(?:ouvre|ouvrir|lance|lancer|démarre|démarrer|va\\s+sur|aller\\s+sur|va\\s+dans|aller\\s+dans)\\s+(?:mon\\s+application\\s+|l'application\\s+|mon\\s+app\\s+|l'app\\s+|application\\s+)?", RegexOption.IGNORE_CASE), "")
             .trim()
 
         if (requestedAppRaw.isBlank()) {

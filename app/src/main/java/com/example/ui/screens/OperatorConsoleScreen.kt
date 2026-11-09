@@ -418,6 +418,9 @@ fun OperatorConsoleScreen(
                     // Suggestions naturelles en 1 geste
                     val quickConsumerSuggestions = remember {
                         listOf(
+                            "🚗 Charge de ma voiture" to "Va dans mon application Toyota regarde ma charge",
+                            "🎮 Voir mes jeux Steam" to "Aller dans mon application Steam pour voir les jeux",
+                            "🤖 Message à Gemini" to "Envoie un message à Gemini sur mon téléphone",
                             "💙 Discussion Messenger" to "Ouvre une conversation sur Messenger",
                             "🟢 Discussion WhatsApp" to "Ouvre une conversation sur WhatsApp",
                             "💡 Créer une note Keep" to "Crée une note dans Keep : Acheter du café",
@@ -425,7 +428,6 @@ fun OperatorConsoleScreen(
                             "🎮 Contrôler l'écran" to "Contrôler l'écran",
                             "💬 Envoyer un SMS" to "Envoyer un message",
                             "📞 Appeler un contact" to "Appeler quelqu'un",
-                            "🎮 Dernier jeu Steam" to "Retrouve le dernier jeu auquel j'ai joué dans Steam",
                             "⏱️ Mettre un minuteur" to "Mettre un minuteur",
                             "🔦 Lampe torche" to "Allume la lampe torche",
                             "⚙️ Réglages rapides" to "Réglages rapides",

@@ -262,14 +262,20 @@ class AppActionExecutor : Service() {
             val cleaned = rawUserCommand.trim()
             if (cleaned.isBlank()) return null
 
-            // Ne pas intercepter en simple ouverture Fast-Path une mission d'inspection autonome (ex: "va voir combien de charge j'ai sur ma voiture", "va voir mes jeux dans Steam")
+            // Ne pas intercepter en simple ouverture Fast-Path une mission d'inspection autonome (ex: "va dans mon application Toyota regarde ma charge")
             val lowerCmd = cleaned.lowercase()
             if (lowerCmd.contains("va voir") || lowerCmd.contains("aller voir") ||
+                lowerCmd.contains("va dans") || lowerCmd.contains("aller dans") ||
+                lowerCmd.contains("regarde") || lowerCmd.contains("voir") ||
                 lowerCmd.contains("combien") || lowerCmd.contains("vérifie") ||
-                lowerCmd.contains("verifie") || lowerCmd.contains("ma voiture") ||
-                lowerCmd.contains("steam") || lowerCmd.contains("gemini") ||
-                lowerCmd.contains("chatgpt") || lowerCmd.contains("clique") ||
-                lowerCmd.contains("scrolle")
+                lowerCmd.contains("verifie") || lowerCmd.contains("check") ||
+                lowerCmd.contains("ma voiture") || lowerCmd.contains("charge") ||
+                lowerCmd.contains("autonomie") || lowerCmd.contains("solde") ||
+                lowerCmd.contains("commande") || lowerCmd.contains("colis") ||
+                lowerCmd.contains("toyota") || lowerCmd.contains("tesla") ||
+                lowerCmd.contains("renault") || lowerCmd.contains("steam") ||
+                lowerCmd.contains("gemini") || lowerCmd.contains("chatgpt") ||
+                lowerCmd.contains("clique") || lowerCmd.contains("scrolle")
             ) {
                 return null
             }

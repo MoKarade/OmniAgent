@@ -37,6 +37,9 @@ enum class UniversalDomainCategory(
         emoji = "🚗",
         factKeyForPreferredApp = "preferred_app_vehicle_ev",
         knownPackageCandidates = listOf(
+            "com.toyota.oneapp.eu" to "Toyota (MyToyota)",
+            "com.toyota.oneapp" to "Toyota",
+            "jp.co.toyota.mytoyota" to "MyToyota",
             "com.teslamotors.tesla" to "Tesla",
             "com.renault.myrenault.one.fr" to "My Renault",
             "com.renault.myrenault" to "My Renault",
@@ -49,16 +52,28 @@ enum class UniversalDomainCategory(
             "de.volkswagen.vwconnect" to "Volkswagen",
             "com.ford.fordpass" to "FordPass",
             "de.audi.myaudi" to "myAudi",
+            "eu.nissan.nissanconnect.services" to "NissanConnect",
+            "se.volvo.vcc" to "Volvo Cars",
+            "com.dacia.mydacia.one.fr" to "My Dacia",
+            "com.saicmotor.iov.europe" to "MG iSMART",
+            "com.byd.bydautolink" to "BYD Auto",
+            "com.porsche.one" to "My Porsche",
+            "eu.lexus.lexuslinkplus" to "Lexus Link+",
             "com.chargemap.android" to "Chargemap"
         ),
         domainTriggerKeywords = listOf(
             "ma voiture", "mon véhicule", "mon vehicule", "la voiture", "charge de ma voiture",
             "batterie de ma voiture", "autonomie de ma voiture", "combien de charge",
-            "combien de batterie sur ma voiture", "tesla", "myrenault", "my renault",
-            "mybmw", "mypeugeot", "voiture électrique", "voiture electrique", "recharge voiture",
+            "combien j'ai de charge", "ma charge", "la charge", "niveau de charge",
+            "regarde ma charge", "voir ma charge", "check ma charge", "mon autonomie",
+            "combien de batterie sur ma voiture", "toyota", "mytoyota", "myt", "tesla",
+            "myrenault", "my renault", "renault", "mybmw", "bmw", "mypeugeot", "peugeot",
+            "citroen", "citroën", "kia", "hyundai", "mercedes", "volkswagen", "ford", "audi",
+            "nissan", "volvo", "dacia", "mg", "byd", "porsche", "lexus",
+            "voiture électrique", "voiture electrique", "recharge voiture",
             "kilométrage", "kilometrage", "portières", "portieres"
         ),
-        navigationTabHints = listOf("Recharge", "Batterie", "Véhicule", "État", "Charge", "Charging", "Controls", "Accueil")
+        navigationTabHints = listOf("Recharge", "Batterie", "Véhicule", "État", "Charge", "Charging", "Autonomie", "Controls", "Accueil")
     ),
     DELIVERY_AND_RIDES(
         id = "delivery_rides",
@@ -172,7 +187,7 @@ data class ResolvedGoalTargetApp(
 /**
  * Agent Cognitif Universel LIA (`LiaUniversalGoalAgent`) :
  * - Comprend n'importe quelle demande d'inspection ou d'action dans une application du téléphone
- *   (ex: "Combien de charge j'ai sur ma voiture ?", "Où en est ma commande Uber ?", "Va voir dans [App] combien j'ai de [X]").
+ *   (ex: "va dans mon application Toyota regarde ma charge", "Combien de charge j'ai sur ma voiture ?", "Où en est ma commande Uber ?").
  * - Identifie automatiquement l'application correspondante via le graphe sémantique et la mémoire Room.
  * - Exécute la boucle autonome :
  *   1. Ouvre l'application cible
@@ -186,24 +201,83 @@ object LiaUniversalGoalAgent {
 
     private val agentScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    private val MESSAGING_OR_MAPS_EXCLUSIONS = setOf(
+        "maps", "google maps", "waze", "messenger", "whatsapp", "telegram",
+        "instagram", "signal", "sms", "messages", "gemini", "google gemini", "chatgpt", "chat gpt"
+    )
+
+    /**
+     * Extrait `(NomDeLApplication, CeQuIlFautRegarderOuFaire)` depuis toutes les tournures naturelles françaises :
+     * - "va dans mon application Toyota regarde ma charge"
+     * - "va dans l'application Toyota et regarde ma charge"
+     * - "ouvre Toyota pour voir ma batterie"
+     * - "va sur mon app Revolut voir mon solde"
+     * - "regarde dans mon application Toyota ma charge"
+     * - "regarde ma charge dans mon application Toyota"
+     */
+    private fun extractExplicitAppAndSubgoalFromPrompt(trimmed: String): Pair<String, String>? {
+        // Pattern 1 : "va dans / ouvre / lance / va sur / dans [mon application] [App] [et/pour]? [regarde/voir/vérifie/check/cherche/dis-moi/combien...] [Reste]"
+        val appFirstRegex = Regex(
+            "^(?:peux-tu\\s+|pourrais-tu\\s+)?(?:va\\s+dans|aller\\s+dans|va\\s+sur|aller\\s+sur|ouvre|ouvrir|lance|lancer|dans|sur)\\s+(?:mon\\s+application\\s+|l'application\\s+|mon\\s+app\\s+|l'app\\s+|application\\s+)?([A-Za-zÀ-ÿ0-9 ._-]{2,28}?)\\s+(?:et\\s+|pour\\s+|puis\\s+)?(regarde(?:r)?|voir|vois|v[ée]rifie(?:r)?|check(?:er)?|cherche(?:r)?|trouve(?:r)?|dis-moi|donne-moi|lis|lire|combien|quel(?:le)?s?|o[ùu])\\b\\s*(.*)$",
+            RegexOption.IGNORE_CASE
+        )
+        appFirstRegex.find(trimmed)?.let { m ->
+            val appName = m.groupValues[1].trim()
+            val verbOrQ = m.groupValues[2].trim()
+            val tail = m.groupValues[3].trim()
+            val subgoal = if (tail.isNotBlank()) "$verbOrQ $tail" else verbOrQ
+            if (appName.isNotBlank() && appName.lowercase(Locale.FRENCH) !in MESSAGING_OR_MAPS_EXCLUSIONS) {
+                return appName to subgoal
+            }
+        }
+
+        // Pattern 2 : "[va voir / regarde / vérifie / check / dis-moi] [dans / sur] [mon application]? [App] [Reste]"
+        val verbThenAppRegex = Regex(
+            "^(?:va\\s+voir|aller\\s+voir|regarde(?:r)?|v[ée]rifie(?:r)?|check(?:er)?|cherche\\s+et\\s+dis-moi|ouvre\\s+et\\s+regarde|dis-moi)\\s+(?:dans\\s+|sur\\s+)(?:mon\\s+application\\s+|l'application\\s+|mon\\s+app\\s+|l'app\\s+|application\\s+)?([A-Za-zÀ-ÿ0-9._-]{2,24})\\s+(.+)$",
+            RegexOption.IGNORE_CASE
+        )
+        verbThenAppRegex.find(trimmed)?.let { m ->
+            val appName = m.groupValues[1].trim()
+            val questionPart = m.groupValues[2].trim()
+            if (appName.isNotBlank() && appName.lowercase(Locale.FRENCH) !in MESSAGING_OR_MAPS_EXCLUSIONS) {
+                return appName to questionPart
+            }
+        }
+
+        // Pattern 3 : "[va voir / regarde / vérifie / check / dis-moi / combien...] [CeQuIlFautVoir] [dans / sur] [mon application]? [App]"
+        val verbThenGoalThenAppRegex = Regex(
+            "^(?:va\\s+voir|aller\\s+voir|regarde(?:r)?|v[ée]rifie(?:r)?|check(?:er)?|dis-moi|combien\\s+j'ai\\s+de|quel\\s+est|quelle\\s+est)\\s+(.+?)\\s+(?:dans|sur)\\s+(?:mon\\s+application\\s+|l'application\\s+|mon\\s+app\\s+|l'app\\s+|application\\s+)?([A-Za-zÀ-ÿ0-9 ._-]{2,28})$",
+            RegexOption.IGNORE_CASE
+        )
+        verbThenGoalThenAppRegex.find(trimmed)?.let { m ->
+            val whatToCheck = m.groupValues[1].trim()
+            val appName = m.groupValues[2].trim()
+            if (appName.isNotBlank() && appName.lowercase(Locale.FRENCH) !in MESSAGING_OR_MAPS_EXCLUSIONS) {
+                return appName to whatToCheck
+            }
+        }
+
+        return null
+    }
+
     /**
      * Analyse si la phrase de l'utilisateur est une mission d'inspection ou d'objectif autonome
-     * (ex: "va voir combien de charge j'ai sur ma voiture", "combien de batterie a ma voiture",
-     * "va voir dans [App] ...", "vérifie dans [App] ...").
+     * (ex: "va dans mon application Toyota regarde ma charge", "va voir combien de charge j'ai sur ma voiture",
+     * "combien de batterie a ma voiture", "va voir dans [App] ...").
      */
     fun checkUniversalGoalOrInspectionIntent(input: String): LiaBrainTurnOutcome? {
         val trimmed = input.trim()
         val lower = trimmed.lowercase(Locale.FRENCH)
 
         // 0. Permettre à l'utilisateur de mémoriser l'état de sa voiture ou son app préférée
-        // Ex: "Ma voiture est une Tesla à 82% de batterie (375 km)" ou "Mon application de voiture est My Renault"
+        // Ex: "Ma voiture est une Tesla à 82% de batterie (375 km)" ou "Mon application de voiture est Toyota"
         val setCarAppRegex = Regex(
-            "(?:mon\\s+application\\s+de\\s+voiture\\s+est|ma\\s+voiture\\s+utilise\\s+l'app|mon\\s+app\\s+voiture\\s+est)\\s+(.+)$",
+            "(?:mon\\s+application\\s+de\\s+voiture\\s+est|ma\\s+voiture\\s+utilise\\s+l'app|mon\\s+app\\s+voiture\\s+est|ma\\s+voiture\\s+est\\s+une)\\s+([A-Za-zÀ-ÿ0-9 ._-]+)$",
             RegexOption.IGNORE_CASE
         )
         setCarAppRegex.find(trimmed)?.let { m ->
             val appName = m.groupValues[1].trim().removeSurrounding("\"").removeSurrounding("«", "»")
-            if (appName.isNotBlank()) {
+            if (appName.isNotBlank() && !appName.contains("%")) {
                 LiaMemoryAndHistoryStore.upsertUserFact(
                     key = UniversalDomainCategory.VEHICLE_AND_EV.factKeyForPreferredApp,
                     label = "Application Véhicule préférée",
@@ -227,12 +301,41 @@ object LiaUniversalGoalAgent {
                 subjectKey = "vehicle_last_telemetry",
                 title = "État batterie & autonomie voiture",
                 detailValue = statusVal,
-                searchTags = "voiture,batterie,charge,autonomie,vehicule,tesla,renault"
+                searchTags = "voiture,batterie,charge,autonomie,vehicule,toyota,tesla,renault"
             )
             return LiaBrainTurnOutcome(
                 replyText = "🚗 J'ai bien enregistré l'état de votre véhicule en mémoire : **$statusVal**.",
                 learnedBadge = "🔋 Voiture : $statusVal"
             )
+        }
+
+        // 0B. Cas prioritaire : L'utilisateur mentionne explicitement l'application ET ce qu'il veut regarder
+        // Ex: "va dans mon application Toyota regarde ma charge", "ouvre Revolut et regarde mon solde"
+        val explicitAppAndGoal = extractExplicitAppAndSubgoalFromPrompt(trimmed)
+        if (explicitAppAndGoal != null) {
+            val (explicitAppName, subgoal) = explicitAppAndGoal
+            val combinedLower = "$explicitAppName $subgoal $lower".lowercase(Locale.FRENCH)
+            val matchedDomainForExplicit = UniversalDomainCategory.entries.firstOrNull { domain ->
+                domain.domainTriggerKeywords.any { kw -> combinedLower.contains(kw) } ||
+                    domain.knownPackageCandidates.any { (_, label) ->
+                        label.contains(explicitAppName, ignoreCase = true) ||
+                            explicitAppName.contains(label, ignoreCase = true)
+                    }
+            }
+            if (matchedDomainForExplicit != null) {
+                // Mémoriser automatiquement cette application comme préférence du domaine
+                LiaMemoryAndHistoryStore.upsertUserFact(
+                    key = matchedDomainForExplicit.factKeyForPreferredApp,
+                    label = "Application ${matchedDomainForExplicit.titleFr}",
+                    value = explicitAppName
+                )
+                return handleDomainInspectionGoal(
+                    rawUserPrompt = trimmed,
+                    domain = matchedDomainForExplicit,
+                    explicitAppOverride = explicitAppName
+                )
+            }
+            return handleGenericAppInspectionGoal(trimmed, explicitAppName, subgoal)
         }
 
         // 1. Détecter si la requête correspond à un domaine sémantique connu (Voiture, Livraison, Banque, Maison, Santé, Jeux)
@@ -248,9 +351,12 @@ object LiaUniversalGoalAgent {
             lower.contains("ou en est") ||
             lower.contains("va voir") ||
             lower.contains("aller voir") ||
+            lower.contains("va dans") ||
+            lower.contains("aller dans") ||
             lower.contains("vérifie") ||
             lower.contains("verifie") ||
             lower.contains("regarde") ||
+            lower.contains("voir") ||
             lower.contains("check") ||
             lower.contains("autonomie") ||
             lower.contains("charge") ||
@@ -259,20 +365,10 @@ object LiaUniversalGoalAgent {
             lower.contains("commande") ||
             lower.contains("livraison")
 
-        if (matchedDomain != null && isInspectionQuestionOrCommand) {
-            // Vérifier si l'utilisateur demande la batterie du TÉLÉPHONE vs la batterie de la VOITURE
-            if (matchedDomain == UniversalDomainCategory.VEHICLE_AND_EV ||
-                lower.contains("voiture") || lower.contains("véhicule") || lower.contains("vehicule") ||
-                matchedDomain != UniversalDomainCategory.VEHICLE_AND_EV
-            ) {
-                return handleDomainInspectionGoal(trimmed, matchedDomain)
-            }
-        }
-
-        // 1B. Cas où l'utilisateur demande la batterie du téléphone lui-même ("combien de batterie j'ai sur mon téléphone")
+        // 1B. Cas où l'utilisateur demande explicitement la batterie du TÉLÉPHONE lui-même ("combien de batterie j'ai sur mon téléphone")
         if ((lower.contains("batterie") || lower.contains("charge")) &&
             (lower.contains("téléphone") || lower.contains("telephone") || lower == "combien de batterie j'ai" || lower == "quel est mon niveau de batterie") &&
-            !lower.contains("voiture")
+            !lower.contains("voiture") && !lower.contains("toyota") && !lower.contains("tesla") && !lower.contains("renault")
         ) {
             val ctx = LiaMemoryAndHistoryStore.getApplicationContextOrNull()
             val bm = ctx?.getSystemService(Context.BATTERY_SERVICE) as? BatteryManager
@@ -282,36 +378,15 @@ object LiaUniversalGoalAgent {
                 val statusStr = if (isCharging) "⚡ En charge" else "🔋 Sur batterie"
                 return LiaBrainTurnOutcome(
                     replyText = "🔋 Votre téléphone est actuellement à **$pct% de batterie** ($statusStr).\n\n" +
-                        "*(Si vous vouliez parler de votre voiture électrique, dites-moi : « Combien de charge j'ai sur ma voiture ? »)*",
+                        "*(Si vous vouliez parler de votre voiture, dites-moi : « Combien de charge j'ai sur ma voiture ? »)*",
                     isPhoneAction = true,
                     learnedBadge = "🔋 Batterie téléphone : $pct%"
                 )
             }
         }
 
-        // 2. Détecter une demande d'inspection universelle dans N'IMPORTE QUELLE application :
-        // Ex: "va voir dans [App] [Question]", "ouvre [App] et regarde [X]", "vérifie [X] sur [App]"
-        val genericInspectRegex = Regex(
-            "^(?:va\\s+voir|aller\\s+voir|regarde|v[ée]rifie|check|cherche\\s+et\\s+dis-moi|ouvre\\s+et\\s+regarde)\\s+(?:dans\\s+|sur\\s+)?([A-Za-zÀ-ÿ0-9 ._-]+?)\\s+(?:combien|quel|quelle|quels|quelles|si|où|ou|le|la|les|mon|ma|mes)\\s+(.+)$",
-            RegexOption.IGNORE_CASE
-        )
-        genericInspectRegex.find(trimmed)?.let { m ->
-            val appNameRaw = m.groupValues[1].trim()
-            val questionPart = m.groupValues[2].trim()
-            return handleGenericAppInspectionGoal(trimmed, appNameRaw, questionPart)
-        }
-
-        val reverseInspectRegex = Regex(
-            "^(?:va\\s+voir|aller\\s+voir|regarde|v[ée]rifie|check|dis-moi)\\s+(.+?)\\s+(?:dans|sur)\\s+(?:mon\\s+application\\s+|l'application\\s+|l'app\\s+)?([A-Za-zÀ-ÿ0-9 ._-]+)$",
-            RegexOption.IGNORE_CASE
-        )
-        reverseInspectRegex.find(trimmed)?.let { m ->
-            val whatToCheck = m.groupValues[1].trim()
-            val appNameRaw = m.groupValues[2].trim()
-            val lowerApp = appNameRaw.lowercase()
-            if (lowerApp !in setOf("maps", "google maps", "messenger", "whatsapp", "telegram", "sms", "internet")) {
-                return handleGenericAppInspectionGoal(trimmed, appNameRaw, whatToCheck)
-            }
+        if (matchedDomain != null && isInspectionQuestionOrCommand) {
+            return handleDomainInspectionGoal(trimmed, matchedDomain)
         }
 
         return null
@@ -319,12 +394,13 @@ object LiaUniversalGoalAgent {
 
     private fun handleDomainInspectionGoal(
         rawUserPrompt: String,
-        domain: UniversalDomainCategory
+        domain: UniversalDomainCategory,
+        explicitAppOverride: String? = null
     ): LiaBrainTurnOutcome {
-        val resolved = resolveBestAppForDomain(domain)
+        val resolved = resolveBestAppForDomain(domain, explicitAppOverride)
 
         // Si plusieurs applications du même domaine sont installées sur le téléphone et qu'aucune préférence n'a encore été mémorisée :
-        if (resolved.multipleCandidatesInstalled.size > 1) {
+        if (explicitAppOverride.isNullOrBlank() && resolved.multipleCandidatesInstalled.size > 1) {
             val names = resolved.multipleCandidatesInstalled.map { it.appLabel }
             LiaMemoryAndHistoryStore.setPendingFollowUp(
                 LiaPendingFollowUp.WaitingForGeneralClarification("ASK_DOMAIN_APP_CHOICE:${domain.id}:$rawUserPrompt")
@@ -368,8 +444,8 @@ object LiaUniversalGoalAgent {
             isPhoneAction = true,
             learnedBadge = "${domain.emoji} Inspection : ${resolved.appLabel}",
             quickReplies = listOf(
+                "Mon application de voiture est Toyota",
                 "Mon application de voiture est Tesla",
-                "Mon application de voiture est My Renault",
                 "Lis l'écran"
             )
         )
@@ -411,8 +487,35 @@ object LiaUniversalGoalAgent {
     /**
      * Résout la meilleure application installée ou mémorisée pour un domaine donné (ex: Voiture, Livraison, Banque).
      */
-    fun resolveBestAppForDomain(domain: UniversalDomainCategory): ResolvedGoalTargetApp {
+    fun resolveBestAppForDomain(
+        domain: UniversalDomainCategory,
+        explicitAppOverride: String? = null
+    ): ResolvedGoalTargetApp {
         val installedApps = LiaUniversalAppsAndGoogleHub.state.value.installedPhoneApps
+
+        // 0. Si l'utilisateur a nommé explicitement l'application dans sa phrase (ex: "va dans mon application Toyota regarde ma charge")
+        if (!explicitAppOverride.isNullOrBlank()) {
+            val matchInstalled = LiaUniversalAppsAndGoogleHub.findBestMatchingInstalledApp(explicitAppOverride)
+            if (matchInstalled != null) {
+                return ResolvedGoalTargetApp(
+                    domain = domain,
+                    appLabel = matchInstalled.appLabel,
+                    packageNameOrUri = matchInstalled.packageName,
+                    isInstalledOnDevice = true
+                )
+            }
+            val knownCandidate = domain.knownPackageCandidates.firstOrNull {
+                it.second.contains(explicitAppOverride, ignoreCase = true) ||
+                    explicitAppOverride.contains(it.second, ignoreCase = true)
+            }
+            val cleanName = explicitAppOverride.replaceFirstChar { it.uppercase() }
+            return ResolvedGoalTargetApp(
+                domain = domain,
+                appLabel = knownCandidate?.second ?: cleanName,
+                packageNameOrUri = knownCandidate?.first ?: cleanName,
+                isInstalledOnDevice = false
+            )
+        }
 
         // 1. Vérifier si l'utilisateur a déjà mémorisé une application préférée pour ce domaine dans Room
         val preferredFact = LiaMemoryAndHistoryStore.getUserFactValue(domain.factKeyForPreferredApp)
@@ -441,7 +544,8 @@ object LiaUniversalGoalAgent {
         val matchingInstalled = installedApps.filter { installed ->
             domain.knownPackageCandidates.any { (pkg, name) ->
                 installed.packageName.equals(pkg, ignoreCase = true) ||
-                    installed.appLabel.equals(name, ignoreCase = true)
+                    installed.appLabel.equals(name, ignoreCase = true) ||
+                    installed.appLabel.contains(name, ignoreCase = true)
             }
         }
 
