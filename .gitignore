@@ -16,4 +16,5 @@
 local.properties
 .env
 *-debug.log
-
+/.agents/
+/PROJECT.md

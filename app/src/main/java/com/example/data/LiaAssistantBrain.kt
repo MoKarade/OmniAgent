@@ -53,7 +53,7 @@ object LiaAssistantBrain {
         onStreamingPartial: ((String) -> Unit)? = null,
         optimizedSystemInstruction: String? = null
     ): LiaBrainTurnOutcome {
-        val cleaned = rawUserText.trim()
+        val cleaned = rawUserText.replace('’', '\'').replace('‘', '\'').trim()
         val now = currentTimeFormatted()
 
         // 1. Append User Message to the persistent conversation history (never erasing previous messages!)
@@ -288,6 +288,7 @@ object LiaAssistantBrain {
     private fun checkCustomLearningAndRuleIntent(input: String): LiaBrainTurnOutcome? {
         return LiaFactAndRuleExtractor.checkCustomLearningAndRuleIntent(input) { targetCmd ->
             checkScreenControlAndGestureIntent(targetCmd)
+                ?: com.example.service.LiaUniversalGoalAgent.checkUniversalGoalOrInspectionIntent(targetCmd)
                 ?: checkCrossAppMessagingAndLookupIntent(targetCmd)
                 ?: checkAutonomousAppTaskIntent(targetCmd)
                 ?: checkGeneralAndPreciseSystemActionsIntent(targetCmd)
@@ -304,17 +305,35 @@ object LiaAssistantBrain {
      * - `global_action` ("bouton retour", "écran d'accueil", "applications récentes", "ouvre les notifications", "capture d'écran")
      */
     private fun checkScreenControlAndGestureIntent(input: String): LiaBrainTurnOutcome? {
-        val trimmed = input.trim()
+        val trimmed = input.replace('’', '\'').replace('‘', '\'').trim()
         val lower = trimmed.lowercase()
+        val lowerNoPunct = lower.replace(Regex("\\s*[?!.…]+$"), "").trim()
+
+        // Ne pas intercepter les missions qui ciblent une application ou les Paramètres (ex: "va dans les paramètres...", "ouvre Toyota et...")
+        if (lowerNoPunct != "ouvre les notifications" && (
+                lower.contains("va dans ") ||
+                    lower.contains("aller dans ") ||
+                    lower.startsWith("ouvre ") ||
+                    lower.startsWith("ouvrir ") ||
+                    lower.startsWith("lance ") ||
+                    lower.startsWith("lancer ") ||
+                    lower.contains("dans l'application") ||
+                    lower.contains("dans mon application") ||
+                    lower.contains("dans les paramètres") ||
+                    lower.contains("dans les parametres")
+                )
+        ) {
+            return null
+        }
 
         // 0. Menu général : "Contrôler l'écran", "Actions écran", "Contrôle de l'écran"
-        if (lower == "contrôler l'écran" ||
-            lower == "controler l'ecran" ||
-            lower == "contrôle de l'écran" ||
-            lower == "controle de l'ecran" ||
-            lower == "actions écran" ||
-            lower == "actions ecran" ||
-            lower == "gestes écran"
+        if (lowerNoPunct == "contrôler l'écran" ||
+            lowerNoPunct == "controler l'ecran" ||
+            lowerNoPunct == "contrôle de l'écran" ||
+            lowerNoPunct == "controle de l'ecran" ||
+            lowerNoPunct == "actions écran" ||
+            lowerNoPunct == "actions ecran" ||
+            lowerNoPunct == "gestes écran"
         ) {
             return LiaBrainTurnOutcome(
                 replyText = "🎮 **Contrôle Total de l'Écran & Gestes Accessibilité Actifs** :\n\n" +
@@ -364,15 +383,15 @@ object LiaAssistantBrain {
 
         // 1. Défilement / Scroll / Swipe (Bas, Haut, Gauche, Droite)
         val isScrollDown = lower.contains("scrolle vers le bas") || lower.contains("scroll vers le bas") ||
-            lower == "scrolle en bas" || lower == "scrolle" || lower.contains("descends sur l'écran") || lower.contains("descends sur la page") ||
-            lower.contains("défile vers le bas") || lower.contains("defile vers le bas") || lower == "swipe up"
+            lowerNoPunct == "scrolle en bas" || lowerNoPunct == "scrolle" || lower.contains("descends sur l'écran") || lower.contains("descends sur la page") ||
+            lower.contains("défile vers le bas") || lower.contains("defile vers le bas") || lowerNoPunct == "swipe up"
         val isScrollUp = lower.contains("scrolle vers le haut") || lower.contains("scroll vers le haut") ||
-            lower == "scrolle en haut" || lower.contains("monte sur l'écran") || lower.contains("monte sur la page") ||
-            lower.contains("défile vers le haut") || lower.contains("defile vers le haut") || lower == "swipe down"
+            lowerNoPunct == "scrolle en haut" || lower.contains("monte sur l'écran") || lower.contains("monte sur la page") ||
+            lower.contains("défile vers le haut") || lower.contains("defile vers le haut") || lowerNoPunct == "swipe down"
         val isSwipeLeft = lower.contains("balaye à gauche") || lower.contains("balaye vers la gauche") ||
-            lower.contains("swipe à gauche") || lower == "swipe left" || lower.contains("glisse à gauche")
+            lower.contains("swipe à gauche") || lowerNoPunct == "swipe left" || lower.contains("glisse à gauche")
         val isSwipeRight = lower.contains("balaye à droite") || lower.contains("balaye vers la droite") ||
-            lower.contains("swipe à droite") || lower == "swipe right" || lower.contains("glisse à droite")
+            lower.contains("swipe à droite") || lowerNoPunct == "swipe right" || lower.contains("glisse à droite")
 
         if (isScrollDown || isScrollUp || isSwipeLeft || isSwipeRight) {
             val (dirLabel, code) = when {
@@ -405,7 +424,7 @@ object LiaAssistantBrain {
             RegexOption.IGNORE_CASE
         )
         clickRegex.find(trimmed)?.let { m ->
-            val targetDesc = m.groupValues[1].trim()
+            val targetDesc = m.groupValues[1].trim().replace(Regex("\\s*[?!.…]+$"), "").trim()
             val tLower = targetDesc.lowercase()
             // Ne pas intercepter "appuie sur retour / accueil" qui sont gérés juste après en actions globales
             if (tLower !in setOf("retour", "le bouton retour", "accueil", "l'accueil")) {
@@ -461,7 +480,7 @@ object LiaAssistantBrain {
         }
 
         // 4. Actions système globales (Retour, Accueil, Notifications, Applications récentes, Capture d'écran)
-        if (lower == "bouton retour" || lower == "retour arrière" || lower == "reviens en arrière" || lower == "appuie sur retour") {
+        if (lowerNoPunct == "bouton retour" || lowerNoPunct == "retour arrière" || lowerNoPunct == "reviens en arrière" || lowerNoPunct == "appuie sur retour") {
             val action = LiaAppLaunchAction("Bouton Retour", "global_action:BACK", "home_launcher", 15L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "Bouton retour",
@@ -479,7 +498,7 @@ object LiaAssistantBrain {
             )
         }
 
-        if (lower == "écran d'accueil" || lower == "ecran d'accueil" || lower == "va à l'accueil" || lower == "retour à l'accueil") {
+        if (lowerNoPunct == "écran d'accueil" || lowerNoPunct == "ecran d'accueil" || lowerNoPunct == "va à l'accueil" || lowerNoPunct == "retour à l'accueil") {
             val action = LiaAppLaunchAction("Écran d'accueil", "global_action:HOME", "home_launcher", 15L)
             LiaMemoryAndHistoryStore.recordLearnedShortcut(
                 triggerPhrase = "Écran d'accueil",
@@ -497,7 +516,7 @@ object LiaAssistantBrain {
             )
         }
 
-        if (lower == "ouvre les notifications" || lower == "barre de notifications" || lower == "affiche les notifications") {
+        if (lowerNoPunct == "ouvre les notifications" || lowerNoPunct == "barre de notifications" || lowerNoPunct == "affiche les notifications") {
             val action = LiaAppLaunchAction("Volet Notifications", "global_action:NOTIFICATIONS", "home_launcher", 15L)
             return LiaBrainTurnOutcome(
                 replyText = "🔔 **Action système exécutée** : **Ouverture du volet de notifications Android (`GLOBAL_ACTION_NOTIFICATIONS`)**.",
@@ -507,7 +526,7 @@ object LiaAssistantBrain {
             )
         }
 
-        if (lower.contains("capture d'écran") || lower.contains("capture d'ecran") || lower == "screenshot") {
+        if (lower.contains("capture d'écran") || lower.contains("capture d'ecran") || lowerNoPunct == "screenshot") {
             val action = LiaAppLaunchAction("Capture d'écran", "global_action:SCREENSHOT", "home_launcher", 15L)
             return LiaBrainTurnOutcome(
                 replyText = "📸 **Action système exécutée** : **Capture d'écran (`GLOBAL_ACTION_TAKE_SCREENSHOT`)**.",
@@ -2310,7 +2329,8 @@ object LiaAssistantBrain {
     }
 
     private fun checkFastAppLaunchIntent(input: String): LiaBrainTurnOutcome? {
-        val lower = input.lowercase().trim()
+        val normalizedInput = input.replace('’', '\'').replace('‘', '\'').trim()
+        val lower = normalizedInput.lowercase()
         val snap = LiaMemoryAndHistoryStore.state.value
 
         // 0. Classification centrale via IntentHandler + UsageStatsManager pour les Intents système complets (caméra, minuteur, sous-paramètres Wi-Fi/Bluetooth, app #1)
@@ -2823,8 +2843,9 @@ object LiaAssistantBrain {
 
         if (!isExplicitOpenVerb && !directAppNameMatch) return null
 
-        val requestedAppRaw = input
+        val requestedAppRaw = normalizedInput
             .replace(Regex("^(?:ouvre|ouvrir|lance|lancer|démarre|démarrer|va\\s+sur|aller\\s+sur|va\\s+dans|aller\\s+dans)\\s+(?:mon\\s+application\\s+|l'application\\s+|mon\\s+app\\s+|l'app\\s+|application\\s+)?", RegexOption.IGNORE_CASE), "")
+            .replace(Regex("\\s*[?!.…]+$"), "")
             .trim()
 
         if (requestedAppRaw.isBlank()) {

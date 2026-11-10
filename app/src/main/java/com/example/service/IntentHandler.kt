@@ -155,7 +155,7 @@ object IntentHandler {
         rawCommand: String,
         context: Context? = LiaMemoryAndHistoryStore.getApplicationContextOrNull()
     ): ClassifiedUserIntent? {
-        val trimmed = rawCommand.trim()
+        val trimmed = rawCommand.replace('’', '\'').replace('‘', '\'').trim()
         val lower = trimmed.lowercase(Locale.FRENCH)
 
         // 0. TOGGLE_FLASHLIGHT : "allume la lampe torche", "éteins la lampe", "lampe torche", "active le flash"
@@ -378,15 +378,42 @@ object IntentHandler {
         }
 
         // 4. OPEN_SYSTEM_SETTINGS (tous les sous-écrans système Android : Wi-Fi, Bluetooth, Son, Luminosité, Batterie, Mode Avion, GPS, Stockage, NFC, etc.)
-        val isSettingsRequest = lower.contains("paramètres ") ||
-            lower.contains("parametres ") ||
-            lower.contains("réglages ") ||
-            lower.contains("reglages ") ||
-            ((lower.startsWith("active ") || lower.startsWith("désactive ") || lower.startsWith("desactive ") || lower.startsWith("coupe ") || lower.startsWith("mets ") || lower.startsWith("ouvre ")) &&
-                (lower.contains("wifi") || lower.contains("wi-fi") || lower.contains("bluetooth") || lower.contains("mode avion") ||
-                    lower.contains("silencieux") || lower.contains("vibreur") || lower.contains("luminosité") || lower.contains("luminosite") ||
-                    lower.contains("économie d'énergie") || lower.contains("economie d'energie") || lower.contains("gps") ||
-                    lower.contains("localisation") || lower.contains("nfc") || lower.contains("point d'accès") || lower.contains("partage de connexion")))
+        // Exclut les missions d'inspection ou de recherche multi-étapes (ex: "va dans les paramètres regarde ma batterie", "ouvre les paramètres et cherche le stockage")
+        // afin que LiaUniversalGoalAgent prenne en charge l'exploration autonome.
+        val isSettingsInspectionOrCompound = lower.contains("regarde") ||
+            lower.contains("cherche") ||
+            lower.contains("trouve") ||
+            lower.contains("retrouve") ||
+            lower.contains("vérifie") ||
+            lower.contains("verifie") ||
+            lower.contains("inspecte") ||
+            lower.contains("explore") ||
+            lower.contains("combien") ||
+            lower.contains("quel ") ||
+            lower.contains("quelle ") ||
+            lower.contains("quels ") ||
+            lower.contains("quelles ") ||
+            lower.contains("où ") ||
+            lower.contains("ou ") ||
+            lower.contains("va voir") ||
+            lower.contains("aller voir") ||
+            lower.startsWith("va dans ") ||
+            lower.startsWith("aller dans ") ||
+            lower.contains(" et ") ||
+            lower.contains(" puis ") ||
+            lower.contains(" pour ")
+
+        val hasSettingsWord = Regex("\\b(?:param[èe]tres?|r[ée]glages?|settings)\\b", RegexOption.IGNORE_CASE)
+            .containsMatchIn(trimmed)
+
+        val isSettingsRequest = !isSettingsInspectionOrCompound && (
+            hasSettingsWord ||
+                ((lower.startsWith("active ") || lower.startsWith("désactive ") || lower.startsWith("desactive ") || lower.startsWith("coupe ") || lower.startsWith("mets ") || lower.startsWith("ouvre ")) &&
+                    (lower.contains("wifi") || lower.contains("wi-fi") || lower.contains("bluetooth") || lower.contains("mode avion") ||
+                        lower.contains("silencieux") || lower.contains("vibreur") || lower.contains("luminosité") || lower.contains("luminosite") ||
+                        lower.contains("économie d'énergie") || lower.contains("economie d'energie") || lower.contains("gps") ||
+                        lower.contains("localisation") || lower.contains("nfc") || lower.contains("point d'accès") || lower.contains("partage de connexion")))
+            )
 
         if (isSettingsRequest) {
             val (settingsAction, subLabel) = when {
@@ -719,6 +746,22 @@ object IntentHandler {
             !lower.contains("avec ") &&
             !lower.contains("pour ") &&
             !lower.contains("dans ") &&
+            !lower.contains(" et ") &&
+            !lower.contains(" puis ") &&
+            !lower.contains("cherche") &&
+            !lower.contains("trouve") &&
+            !lower.contains("regarde") &&
+            !lower.contains("vérifie") &&
+            !lower.contains("verifie") &&
+            !lower.contains("inspecte") &&
+            !lower.contains("explore") &&
+            !lower.contains("clique") &&
+            !lower.contains("scrolle") &&
+            !lower.contains("écris") &&
+            !lower.contains("ecris") &&
+            !lower.contains("tape") &&
+            !lower.contains("lis") &&
+            !lower.contains("combien") &&
             !lower.contains("notifications") &&
             !lower.contains("une application") &&
             !lower.contains("une app") &&
@@ -729,9 +772,15 @@ object IntentHandler {
 
         if (isSimpleOpenAppVerb) {
             val rawAppName = trimmed
-                .replace(Regex("^(?:ouvre l'application|ouvrir l'application|ouvre l'app|ouvrir l'app|ouvre|ouvrir|lance|lancer)\\s+", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("^(?:ouvre l'application|ouvrir l'application|ouvre l'app|ouvrir l'app|ouvre mon application|ouvre mon app|ouvre l'appli|ouvrir l'appli|ouvre mon appli|ouvre|ouvrir|lance|lancer)\\s+(?:les\\s+|le\\s+|la\\s+|l'|mon\\s+|ma\\s+|mes\\s+)?", RegexOption.IGNORE_CASE), "")
+                .replace(Regex("\\s*[?!.…]+$"), "")
                 .trim()
             val knownAppMap = mapOf(
+                "paramètres" to ("Paramètres" to "com.android.settings"),
+                "parametres" to ("Paramètres" to "com.android.settings"),
+                "réglages" to ("Paramètres" to "com.android.settings"),
+                "reglages" to ("Paramètres" to "com.android.settings"),
+                "settings" to ("Paramètres" to "com.android.settings"),
                 "youtube" to ("YouTube" to "com.google.android.youtube"),
                 "spotify" to ("Spotify" to "com.spotify.music"),
                 "gmail" to ("Gmail" to "com.google.android.gm"),

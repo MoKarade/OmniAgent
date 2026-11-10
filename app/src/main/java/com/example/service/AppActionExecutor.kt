@@ -163,6 +163,11 @@ class AppActionExecutor : Service() {
             "agent_goal:"
         )
 
+        private val STANDALONE_VOIR_WORD_REGEX = Regex(
+            "(?<![\\p{L}\\p{N}])\\bvoir\\b(?![\\p{L}\\p{N}])",
+            RegexOption.IGNORE_CASE
+        )
+
         init {
             fastPathScope.launch {
                 for (queuedTask in fastPathQueue) {
@@ -259,16 +264,27 @@ class AppActionExecutor : Service() {
             isVaultPinLocked: Boolean = SoniaSecurityKernel.isVaultLockedRuntime,
             globalAccessPolicy: GlobalAccessPolicyMode = SoniaSecurityKernel.globalPolicyRuntime
         ): FastPathDispatchResult? {
-            val cleaned = rawUserCommand.trim()
+            val cleaned = rawUserCommand.replace('’', '\'').replace('‘', '\'').trim()
             if (cleaned.isBlank()) return null
 
-            // Ne pas intercepter en simple ouverture Fast-Path une mission d'inspection autonome (ex: "va dans mon application Toyota regarde ma charge")
+            // Ne pas intercepter en simple ouverture Fast-Path une mission d'inspection autonome (ex: "va dans mon application Toyota regarde ma charge", "ouvre les paramètres et cherche le stockage")
             val lowerCmd = cleaned.lowercase()
             if (lowerCmd.contains("va voir") || lowerCmd.contains("aller voir") ||
                 lowerCmd.contains("va dans") || lowerCmd.contains("aller dans") ||
-                lowerCmd.contains("regarde") || lowerCmd.contains("voir") ||
+                lowerCmd.contains("regarde") || STANDALONE_VOIR_WORD_REGEX.containsMatchIn(lowerCmd) ||
                 lowerCmd.contains("combien") || lowerCmd.contains("vérifie") ||
                 lowerCmd.contains("verifie") || lowerCmd.contains("check") ||
+                lowerCmd.contains("cherche") || lowerCmd.contains("chercher") ||
+                lowerCmd.contains("trouve") || lowerCmd.contains("trouver") ||
+                lowerCmd.contains("retrouve") || lowerCmd.contains("inspecte") ||
+                lowerCmd.contains("explore") || lowerCmd.contains("analyse") ||
+                lowerCmd.contains("quel ") || lowerCmd.contains("quelle ") ||
+                lowerCmd.contains("quels ") || lowerCmd.contains("quelles ") ||
+                lowerCmd.contains("où ") || lowerCmd.contains("ou ") ||
+                lowerCmd.contains("dans les paramètres") || lowerCmd.contains("dans les parametres") ||
+                lowerCmd.contains("dans l'application") || lowerCmd.contains("dans mon application") ||
+                lowerCmd.contains("et cherche") || lowerCmd.contains("et regarde") ||
+                lowerCmd.contains("et clique") || lowerCmd.contains("et trouve") ||
                 lowerCmd.contains("ma voiture") || lowerCmd.contains("charge") ||
                 lowerCmd.contains("autonomie") || lowerCmd.contains("solde") ||
                 lowerCmd.contains("commande") || lowerCmd.contains("colis") ||
@@ -873,8 +889,13 @@ class AppActionExecutor : Service() {
                     LiaClassifiedIntentType.OPEN_SYSTEM_SETTINGS -> {
                         val settingsAction = spec.extractedParameters["settings_action"]
                             ?: uriOrPkg.removePrefix("settings:").ifBlank { Settings.ACTION_SETTINGS }
-                        Intent(settingsAction).apply {
+                        val primarySettingsIntent = Intent(settingsAction).apply {
                             bindBestPackageViaPackageManager(pm, this, "com.android.settings")
+                        }
+                        if (primarySettingsIntent.resolveActivity(pm) != null) {
+                            primarySettingsIntent
+                        } else {
+                            Intent(Settings.ACTION_SETTINGS)
                         }
                     }
 
@@ -1089,12 +1110,23 @@ class AppActionExecutor : Service() {
             val directIntent = pm.getLaunchIntentForPackage(packageOrQuery)
             if (directIntent != null) return directIntent
 
+            if (packageOrQuery.equals("com.android.settings", ignoreCase = true) ||
+                LiaUniversalAppsAndGoogleHub.isSettingsAliasQuery(packageOrQuery) ||
+                LiaUniversalAppsAndGoogleHub.isSettingsAliasQuery(appLabel)
+            ) {
+                return pm.getLaunchIntentForPackage("com.android.settings")
+                    ?: Intent(Settings.ACTION_SETTINGS)
+            }
+
             val matchedInstalled = LiaUniversalAppsAndGoogleHub.findBestMatchingInstalledApp(
                 packageOrQuery.ifBlank { appLabel }
             )
             if (matchedInstalled != null) {
                 val matchedIntent = pm.getLaunchIntentForPackage(matchedInstalled.packageName)
                 if (matchedIntent != null) return matchedIntent
+                if (matchedInstalled.packageName.equals("com.android.settings", ignoreCase = true)) {
+                    return Intent(Settings.ACTION_SETTINGS)
+                }
             }
 
             return null

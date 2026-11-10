@@ -389,10 +389,10 @@ object SoniaSecurityKernel {
      */
     fun validateActionTargetSafety(rawTarget: String): ActionTargetSafetyVerdict {
         val trimmed = rawTarget.trim()
-        if (trimmed.isBlank() || trimmed.length > 240) {
+        if (trimmed.isBlank() || trimmed.length > 360) {
             return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
         }
-        if (trimmed.any { it == ';' || it == '|' || it == '`' || it == '\n' || it == '\r' } ||
+        if (trimmed.any { it == ';' || it == '`' || it == '\n' || it == '\r' } ||
             trimmed.contains("&&") || trimmed.contains("$(")
         ) {
             return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
@@ -413,30 +413,39 @@ object SoniaSecurityKernel {
             return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
         }
 
+        val allowsPipeDelimiter = lower.startsWith("agent_goal:") || lower.startsWith("ui_macro:")
+        if (trimmed.contains('|') && !allowsPipeDelimiter) {
+            return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
+        }
+
         val safePrefixes = listOf(
-            "geo:",
-            "google.navigation:",
-            "app_msg:",
-            "flashlight:",
-            "alarm:",
-            "timer:",
-            "settings:",
-            "camera:",
-            "media_play:",
-            "app_search:",
-            "calendar_insert:",
-            "share_text:",
-            "steam:",
+            "agent_goal:",
+            "ui_macro:",
             "screen_click:",
             "screen_gesture:",
             "screen_type:",
             "global_action:",
             "ai_prompt:",
-            "ui_macro:",
-            "agent_goal:"
+            "steam:",
+            "app_msg:",
+            "app_search:",
+            "timer:",
+            "flashlight:",
+            "camera:",
+            "settings:",
+            "media_play:",
+            "share_text:",
+            "geo:",
+            "google.navigation:",
+            "alarm:",
+            "calendar_insert:"
         )
         if (safePrefixes.any { lower.startsWith(it) }) {
             return ActionTargetSafetyVerdict.SAFE_APP_LAUNCH
+        }
+
+        if (trimmed.length > 240) {
+            return ActionTargetSafetyVerdict.BLOCKED_UNSAFE_TARGET
         }
 
         val confirmationPrefixes = listOf(

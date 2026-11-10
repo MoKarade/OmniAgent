@@ -138,41 +138,234 @@ class LiaAccessibilityService : AccessibilityService() {
             return collectVisibleTexts(root, maxItems = 50)
         }
 
+        data class InteractiveUiNodeSpec(
+            val label: String,
+            val viewIdResourceName: String = "",
+            val className: String = "",
+            val centerX: Int = 0,
+            val centerY: Int = 0,
+            val isClickable: Boolean = true,
+            val isEditable: Boolean = false,
+            val isScrollable: Boolean = false,
+            val isSelectedOrChecked: Boolean = false
+        )
+
         data class StructuredScreenSnapshot(
             val activePackageName: String,
-            val allVisibleTexts: List<String>,
-            val clickableButtonsAndTabs: List<String>,
-            val progressAndGaugeValues: List<String>,
-            val keyValuePairs: List<Pair<String, String>>
+            val allVisibleTexts: List<String> = emptyList(),
+            val clickableButtonsAndTabs: List<String> = emptyList(),
+            val progressAndGaugeValues: List<String> = emptyList(),
+            val keyValuePairs: List<Pair<String, String>> = emptyList(),
+            val interactiveNodes: List<InteractiveUiNodeSpec> = emptyList(),
+            val hasEditableSearchField: Boolean = false,
+            val hasSearchButtonOrBar: Boolean = false,
+            val isScrollableContainerPresent: Boolean = false,
+            val screenFingerprintHash: Int = 0
+        )
+
+        private val SEARCH_TRIGGER_KEYWORDS = listOf(
+            "rechercher dans les parametres",
+            "search settings",
+            "rechercher",
+            "search",
+            "chercher",
+            "search_action_bar",
+            "search_bar",
+            "action_search",
+            "menu_search",
+            "search_button",
+            "search_src_text",
+            "search_plate",
+            "search_box"
         )
 
         /**
-         * Capture une vue structurée complète de l'écran actif :
-         * - Tous les textes et descriptions d'éléments
+         * Normalise un texte d'interface (suppression des accents NFD + minuscules + espaces unifiés).
+         */
+        fun normalizeUiTextForMatch(text: String): String {
+            if (text.isBlank()) return ""
+            val decomposed = java.text.Normalizer.normalize(
+                text.replace('’', '\'').trim(),
+                java.text.Normalizer.Form.NFD
+            )
+            return decomposed.replace(Regex("\\p{Mn}+"), "")
+                .lowercase()
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }
+
+        /**
+         * Calcule l'empreinte (hash déterministe) d'un écran à partir du package actif et des textes/jauges visibles.
+         */
+        fun computeScreenFingerprint(
+            packageName: String,
+            visibleTexts: Collection<String>,
+            gauges: Collection<String> = emptyList()
+        ): Int {
+            if (packageName.isBlank() && visibleTexts.isEmpty() && gauges.isEmpty()) return 0
+            val sig = buildString {
+                append(packageName.lowercase().trim())
+                append("|")
+                visibleTexts.take(45).forEach {
+                    append(normalizeUiTextForMatch(it))
+                    append(";")
+                }
+                gauges.take(15).forEach {
+                    append(normalizeUiTextForMatch(it))
+                    append(";")
+                }
+            }
+            val hash = sig.hashCode()
+            return if (hash == 0) 1 else hash
+        }
+
+        private fun collectAllTargetWindowRoots(svc: LiaAccessibilityService): List<AccessibilityNodeInfo> {
+            val roots = mutableListOf<AccessibilityNodeInfo>()
+            val activeRoot = runCatching { svc.rootInActiveWindow }.getOrNull()
+            val interactiveWindows = runCatching { svc.windows }.getOrNull().orEmpty()
+
+            val windowRoots = interactiveWindows.mapNotNull { win ->
+                runCatching { win.root }.getOrNull()
+            }
+
+            val allCandidateRoots = buildList {
+                if (activeRoot != null) add(activeRoot)
+                addAll(windowRoots)
+            }
+
+            val hasExternalAppWindow = allCandidateRoots.any { r ->
+                val p = r.packageName?.toString().orEmpty()
+                p.isNotBlank() && !p.contains("omniagent", ignoreCase = true) && p != svc.packageName
+            }
+
+            val seenPackagesAndBounds = mutableSetOf<String>()
+            for (r in allCandidateRoots) {
+                val p = r.packageName?.toString().orEmpty()
+                if (hasExternalAppWindow && (p.contains("omniagent", ignoreCase = true) || p == svc.packageName)) {
+                    continue
+                }
+                val rect = android.graphics.Rect()
+                runCatching { r.getBoundsInScreen(rect) }
+                val key = "$p:${rect.left},${rect.top},${rect.right},${rect.bottom}:${r.childCount}"
+                if (seenPackagesAndBounds.add(key)) {
+                    roots.add(r)
+                }
+            }
+
+            if (roots.isEmpty() && activeRoot != null) {
+                roots.add(activeRoot)
+            }
+            return roots
+        }
+
+        fun hasClickableAncestor(node: AccessibilityNodeInfo?, maxDepth: Int = 5): Boolean {
+            return findClickableAncestor(node, maxDepth) != null
+        }
+
+        private fun findClickableAncestor(node: AccessibilityNodeInfo?, maxDepth: Int = 5): AccessibilityNodeInfo? {
+            var curr = node
+            var depth = 0
+            while (curr != null && depth <= maxDepth) {
+                if (curr.isClickable) return curr
+                curr = runCatching { curr.parent }.getOrNull()
+                depth++
+            }
+            return null
+        }
+
+        private fun collectDirectOrShallowTexts(container: AccessibilityNodeInfo, maxDepth: Int = 3): List<String> {
+            val found = mutableListOf<String>()
+            fun walk(curr: AccessibilityNodeInfo?, depth: Int) {
+                if (curr == null || depth > maxDepth || found.size >= 6) return
+                val t = curr.text?.toString()?.trim().orEmpty()
+                val d = curr.contentDescription?.toString()?.trim().orEmpty()
+                val s = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    curr.stateDescription?.toString()?.trim().orEmpty()
+                } else ""
+                val primary = t.ifBlank { d }.ifBlank { s }
+                if (primary.length in 1..120 && primary !in found) {
+                    found.add(primary)
+                }
+                for (i in 0 until curr.childCount) {
+                    walk(runCatching { curr.getChild(i) }.getOrNull(), depth + 1)
+                }
+            }
+            walk(container, 0)
+            return found
+        }
+
+        /**
+         * Capture une vue structurée complète de l'écran actif (multi-fenêtres & hiérarchie profonde) :
+         * - Tous les textes, hintText, stateDescription et descriptions d'éléments (jusqu'à 180 noeuds)
          * - Les barres de progression / jauges graphiques (`rangeInfo` ex: batterie 78%)
-         * - Les paires Clé -> Valeur adjacentes (ex: "Autonomie" -> "342 km", "Batterie" -> "78%")
-         * - La liste des onglets et boutons cliquables pour la navigation autonome
+         * - Les paires Clé -> Valeur adjacentes et agrégées par ligne cliquable (ex: "Batterie" -> "85%")
+         * - La liste des onglets, lignes de préférences et boutons cliquables (ancêtres jusqu'à 5 niveaux)
+         * - Détection des barres/boutons de recherche, conteneurs scrollables et empreinte d'écran (`screenFingerprintHash`)
          */
         fun readStructuredScreenSnapshot(): StructuredScreenSnapshot {
             val svc = instance ?: return StructuredScreenSnapshot("", emptyList(), emptyList(), emptyList(), emptyList())
-            val root = runCatching { svc.rootInActiveWindow }.getOrNull()
-                ?: return StructuredScreenSnapshot(status.value.activeWindowPackage, emptyList(), emptyList(), emptyList(), emptyList())
+            val roots = collectAllTargetWindowRoots(svc)
+            if (roots.isEmpty()) {
+                return StructuredScreenSnapshot(status.value.activeWindowPackage, emptyList(), emptyList(), emptyList(), emptyList())
+            }
 
-            val pkg = root.packageName?.toString().orEmpty().ifBlank { status.value.activeWindowPackage }
+            val primaryRoot = roots.firstOrNull {
+                val p = it.packageName?.toString().orEmpty()
+                p.isNotBlank() && !p.contains("omniagent", ignoreCase = true)
+            } ?: roots.first()
+
+            val pkg = primaryRoot.packageName?.toString().orEmpty().ifBlank { status.value.activeWindowPackage }
             val texts = LinkedHashSet<String>()
             val clickables = LinkedHashSet<String>()
             val gauges = LinkedHashSet<String>()
             val pairs = mutableListOf<Pair<String, String>>()
+            val interactiveSpecs = mutableListOf<InteractiveUiNodeSpec>()
+            var hasEditableSearch = false
+            var hasSearchTrigger = false
+            var hasScrollable = false
             var previousLabel = ""
 
             fun traverse(node: AccessibilityNodeInfo?) {
-                if (node == null || texts.size >= 80) return
+                if (node == null || texts.size >= 180) return
+
                 val t = node.text?.toString()?.trim().orEmpty()
                 val d = node.contentDescription?.toString()?.trim().orEmpty()
+                val hint = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    node.hintText?.toString()?.trim().orEmpty()
+                } else ""
+                val stateDesc = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    node.stateDescription?.toString()?.trim().orEmpty()
+                } else ""
+                val viewIdFull = node.viewIdResourceName?.trim().orEmpty()
+                val viewIdShort = viewIdFull.substringAfterLast('/')
+                val cls = node.className?.toString().orEmpty()
+
+                val isEdit = node.isEditable ||
+                    cls.contains("EditText", ignoreCase = true) ||
+                    cls.contains("AutoComplete", ignoreCase = true)
+                if (node.isScrollable) {
+                    hasScrollable = true
+                }
+
+                val normCombinedMeta = normalizeUiTextForMatch("$t $d $hint $viewIdShort")
+                val matchesSearchMeta = SEARCH_TRIGGER_KEYWORDS.any { kw ->
+                    normCombinedMeta.contains(normalizeUiTextForMatch(kw))
+                }
+                if (isEdit && (matchesSearchMeta || hint.isNotBlank() || t.isNotBlank() || viewIdShort.isNotBlank())) {
+                    hasEditableSearch = true
+                }
+                if (matchesSearchMeta) {
+                    hasSearchTrigger = true
+                }
+
                 val combined = when {
+                    t.isNotBlank() && stateDesc.isNotBlank() && !t.equals(stateDesc, ignoreCase = true) -> "$t ($stateDesc)"
                     t.isNotBlank() && d.isNotBlank() && !t.equals(d, ignoreCase = true) -> "$t ($d)"
                     t.isNotBlank() -> t
-                    else -> d
+                    d.isNotBlank() -> d
+                    stateDesc.isNotBlank() -> stateDesc
+                    hint.isNotBlank() -> hint
+                    else -> ""
                 }
 
                 // Lecture des jauges et ProgressBar (ex: jauge de batterie véhicule ou téléchargement)
@@ -184,30 +377,91 @@ class LiaAccessibilityService : AccessibilityService() {
                     texts.add(gaugeLabel)
                 }
 
+                // Agrégation des lignes cliquables (ex: ligne Preference Android Settings "Batterie" + "85% - En charge")
+                if (node.isClickable && node.childCount >= 1) {
+                    val rowTexts = collectDirectOrShallowTexts(node, maxDepth = 3)
+                    if (rowTexts.isNotEmpty()) {
+                        val primaryRowTitle = rowTexts.first()
+                        clickables.add(primaryRowTitle)
+                        if (rowTexts.size >= 2) {
+                            val summaryText = rowTexts.drop(1).joinToString(" • ")
+                            val aggregatedRow = "$primaryRowTitle — $summaryText"
+                            if (aggregatedRow.length <= 160) {
+                                texts.add(aggregatedRow)
+                                clickables.add(aggregatedRow)
+                            }
+                            if (pairs.none { it.first == primaryRowTitle && it.second == summaryText }) {
+                                pairs.add(primaryRowTitle to summaryText)
+                            }
+                        }
+                    }
+                }
+
+                val clickableAncestor = findClickableAncestor(node, maxDepth = 5)
                 if (combined.length in 1..140) {
                     texts.add(combined)
-                    if (node.isClickable || node.parent?.isClickable == true) {
-                        clickables.add(t.ifBlank { d })
+                    val clickLabel = t.ifBlank { d }.ifBlank { hint }
+                    if (clickableAncestor != null && clickLabel.isNotBlank()) {
+                        clickables.add(clickLabel)
                     }
-                    if (previousLabel.isNotBlank() && previousLabel != combined && combined.any { it.isDigit() }) {
-                        pairs.add(previousLabel to combined)
+                    if (previousLabel.isNotBlank() &&
+                        previousLabel != combined &&
+                        (combined.any { it.isDigit() } || combined.contains("%") || combined.contains("km", ignoreCase = true))
+                    ) {
+                        if (pairs.none { it.first == previousLabel && it.second == combined }) {
+                            pairs.add(previousLabel to combined)
+                        }
                     }
                     previousLabel = combined
+                } else if (matchesSearchMeta && (node.isClickable || clickableAncestor != null)) {
+                    val fallbackSearchLabel = d.ifBlank { hint }.ifBlank { viewIdShort }.ifBlank { "Rechercher" }
+                    clickables.add(fallbackSearchLabel)
+                }
+
+                if ((clickableAncestor != null || isEdit || node.isScrollable) && interactiveSpecs.size < 80) {
+                    val rect = android.graphics.Rect()
+                    runCatching { (clickableAncestor ?: node).getBoundsInScreen(rect) }
+                    val specLabel = combined.ifBlank { viewIdShort }
+                    if (specLabel.isNotBlank()) {
+                        interactiveSpecs.add(
+                            InteractiveUiNodeSpec(
+                                label = specLabel,
+                                viewIdResourceName = viewIdFull,
+                                className = cls,
+                                centerX = rect.centerX(),
+                                centerY = rect.centerY(),
+                                isClickable = clickableAncestor != null,
+                                isEditable = isEdit,
+                                isScrollable = node.isScrollable,
+                                isSelectedOrChecked = node.isSelected || node.isChecked
+                            )
+                        )
+                    }
                 }
 
                 val count = node.childCount
                 for (i in 0 until count) {
+                    if (texts.size >= 180) break
                     traverse(runCatching { node.getChild(i) }.getOrNull())
                 }
             }
 
-            traverse(root)
+            for (root in roots) {
+                traverse(root)
+            }
+
+            val fingerprint = computeScreenFingerprint(pkg, texts, gauges)
             return StructuredScreenSnapshot(
                 activePackageName = pkg,
                 allVisibleTexts = texts.toList(),
                 clickableButtonsAndTabs = clickables.toList(),
                 progressAndGaugeValues = gauges.toList(),
-                keyValuePairs = pairs.take(25)
+                keyValuePairs = pairs.take(35),
+                interactiveNodes = interactiveSpecs,
+                hasEditableSearchField = hasEditableSearch,
+                hasSearchButtonOrBar = hasSearchTrigger || hasEditableSearch,
+                isScrollableContainerPresent = hasScrollable,
+                screenFingerprintHash = fingerprint
             )
         }
 
@@ -220,7 +474,10 @@ class LiaAccessibilityService : AccessibilityService() {
 
         fun isCriticalIrreversibleAction(label: String): Boolean {
             val lower = label.lowercase().trim()
-            return CRITICAL_IRREVERSIBLE_KEYWORDS.any { lower.contains(it) }
+            val norm = normalizeUiTextForMatch(label)
+            return CRITICAL_IRREVERSIBLE_KEYWORDS.any {
+                lower.contains(it) || norm.contains(normalizeUiTextForMatch(it))
+            }
         }
 
         private fun collectVisibleTexts(node: AccessibilityNodeInfo?, maxItems: Int): List<String> {
@@ -242,38 +499,101 @@ class LiaAccessibilityService : AccessibilityService() {
         }
 
         /**
-         * Clique sur un élément de l'écran correspondant à [targetText] (ex: "Bibliothèque", "Jouer", "Envoyer", etc.).
-         * Si non trouvé sous forme de noeud accessible, effectue un tap physique aux coordonnées de secours.
+         * Score d'adéquation (insensible aux accents) entre une requête de clic et un noeud d'interface.
+         */
+        fun scoreNodeTextMatch(
+            query: String,
+            nodeText: String,
+            contentDesc: String = "",
+            hintText: String = "",
+            viewId: String = "",
+            hasClickableSelfOrAncestor: Boolean = false,
+            hasVisibleBounds: Boolean = true
+        ): Int {
+            val normQuery = normalizeUiTextForMatch(query).substringBefore(" — ").trim()
+            if (normQuery.isBlank()) return 0
+
+            val normText = normalizeUiTextForMatch(nodeText)
+            val normDesc = normalizeUiTextForMatch(contentDesc)
+            val normHint = normalizeUiTextForMatch(hintText)
+            val normId = normalizeUiTextForMatch(viewId.substringAfterLast('/'))
+
+            var baseScore = 0
+            if (normText == normQuery || normDesc == normQuery || normHint == normQuery) {
+                baseScore = 100
+            } else if (
+                normText.startsWith("$normQuery ") || normText.endsWith(" $normQuery") || normText.contains(" $normQuery ") ||
+                normDesc.startsWith("$normQuery ") || normDesc.endsWith(" $normQuery") || normDesc.contains(" $normQuery ") ||
+                normText.startsWith(normQuery) || normDesc.startsWith(normQuery)
+            ) {
+                baseScore = 75
+            } else if (normText.contains(normQuery) || normDesc.contains(normQuery) || normHint.contains(normQuery)) {
+                baseScore = 50
+            } else if (normId.isNotBlank() && (normId == normQuery || normId.contains(normQuery) || normQuery.contains(normId))) {
+                baseScore = 40
+            }
+
+            if (baseScore == 0) return 0
+            if (hasClickableSelfOrAncestor) baseScore += 30
+            if (hasVisibleBounds) baseScore += 20
+            return baseScore
+        }
+
+        /**
+         * Clique de manière stricte sur un élément correspondant à [targetText] SANS jamais taper au hasard au centre de l'écran (0.5f, 0.5f).
+         */
+        fun clickNodeByTextStrict(
+            targetText: String,
+            allowCriticalIrreversible: Boolean = false
+        ): Boolean {
+            return clickNodeByTextOrFallback(
+                targetText = targetText,
+                fallbackXRatio = 0.5f,
+                fallbackYRatio = 0.5f,
+                allowCriticalIrreversible = allowCriticalIrreversible,
+                allowCoordinateFallback = false
+            )
+        }
+
+        /**
+         * Clique sur un élément de l'écran correspondant à [targetText] (ex: "Bibliothèque", "Batterie", "Envoyer", etc.).
+         * Si non trouvé sous forme de noeud accessible et que [allowCoordinateFallback] vaut true, effectue un tap physique aux coordonnées de secours.
          */
         fun clickNodeByTextOrFallback(
             targetText: String,
             fallbackXRatio: Float = 0.5f,
             fallbackYRatio: Float = 0.5f,
-            allowCriticalIrreversible: Boolean = false
+            allowCriticalIrreversible: Boolean = false,
+            allowCoordinateFallback: Boolean = true
         ): Boolean {
             val svc = instance ?: return false
             val cleaned = targetText.trim()
+            if (cleaned.isBlank()) return false
             if (!allowCriticalIrreversible && isCriticalIrreversibleAction(cleaned)) {
                 recordAction("🛡️ Clic critique bloqué en attente de confirmation : « $cleaned »")
                 return false
             }
 
-            val root = runCatching { svc.rootInActiveWindow }.getOrNull()
+            val roots = collectAllTargetWindowRoots(svc)
+            val matchedNode = roots.firstNotNullOfOrNull { root ->
+                findBestMatchingNode(root, cleaned)
+            }
 
-            if (root != null && cleaned.isNotBlank()) {
-                val matchedNode = findBestMatchingNode(root, cleaned)
-                if (matchedNode != null) {
-                    val nodeText = (matchedNode.text?.toString().orEmpty() + " " + matchedNode.contentDescription?.toString().orEmpty())
-                    if (!allowCriticalIrreversible && isCriticalIrreversibleAction(nodeText)) {
-                        recordAction("🛡️ Noeud critique bloqué (confirmation requise) : « ${nodeText.trim()} »")
-                        return false
-                    }
-                    val clicked = performClickOnNodeOrParent(matchedNode)
-                    if (clicked) {
-                        recordAction("👆 Clic Accessibilité sur « $cleaned »")
-                        return true
-                    }
+            if (matchedNode != null) {
+                val nodeText = (matchedNode.text?.toString().orEmpty() + " " + matchedNode.contentDescription?.toString().orEmpty())
+                if (!allowCriticalIrreversible && isCriticalIrreversibleAction(nodeText)) {
+                    recordAction("🛡️ Noeud critique bloqué (confirmation requise) : « ${nodeText.trim()} »")
+                    return false
                 }
+                val clicked = performClickOnNodeOrParent(matchedNode)
+                if (clicked) {
+                    recordAction("👆 Clic Accessibilité sur « $cleaned »")
+                    return true
+                }
+            }
+
+            if (!allowCoordinateFallback) {
+                return false
             }
 
             // Fallback : Tap physique par coordonnées via GestureDescription
@@ -281,35 +601,62 @@ class LiaAccessibilityService : AccessibilityService() {
         }
 
         private fun findBestMatchingNode(root: AccessibilityNodeInfo, query: String): AccessibilityNodeInfo? {
-            val lowerQuery = query.lowercase()
-            // 1. Recherche native Android par texte
-            val byText = runCatching { root.findAccessibilityNodeInfosByText(query) }.getOrNull().orEmpty()
-            byText.firstOrNull()?.let { return it }
+            val cleanQuery = query.substringBefore(" — ").trim()
+            if (cleanQuery.isBlank()) return null
 
-            // 2. Parcours récursif sur text, contentDescription et viewIdResourceName
-            var bestMatch: AccessibilityNodeInfo? = null
-            fun search(node: AccessibilityNodeInfo?) {
-                if (node == null || bestMatch != null) return
-                val t = node.text?.toString()?.lowercase().orEmpty()
-                val d = node.contentDescription?.toString()?.lowercase().orEmpty()
-                val id = node.viewIdResourceName?.lowercase().orEmpty()
+            var bestNode: AccessibilityNodeInfo? = null
+            var bestScore = 0
 
-                if (t.contains(lowerQuery) || d.contains(lowerQuery) || id.contains(lowerQuery)) {
-                    bestMatch = node
-                    return
+            fun evaluateCandidate(node: AccessibilityNodeInfo?) {
+                if (node == null) return
+                val t = node.text?.toString()?.trim().orEmpty()
+                val d = node.contentDescription?.toString()?.trim().orEmpty()
+                val hint = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+                    node.hintText?.toString()?.trim().orEmpty()
+                } else ""
+                val id = node.viewIdResourceName?.trim().orEmpty()
+                val hasClickable = findClickableAncestor(node, maxDepth = 5) != null
+                val rect = android.graphics.Rect()
+                runCatching { node.getBoundsInScreen(rect) }
+                val hasBounds = !rect.isEmpty && node.isVisibleToUser
+
+                val score = scoreNodeTextMatch(
+                    query = cleanQuery,
+                    nodeText = t,
+                    contentDesc = d,
+                    hintText = hint,
+                    viewId = id,
+                    hasClickableSelfOrAncestor = hasClickable,
+                    hasVisibleBounds = hasBounds
+                )
+                if (score > bestScore) {
+                    bestScore = score
+                    bestNode = node
                 }
+            }
+
+            // 1. Recherche native Android par texte (évaluée avec notre score)
+            val byText = runCatching { root.findAccessibilityNodeInfosByText(cleanQuery) }.getOrNull().orEmpty()
+            for (candidate in byText) {
+                evaluateCandidate(candidate)
+            }
+
+            // 2. Parcours récursif complet (insensible aux accents, inspectant text, contentDescription, hintText et viewId)
+            fun search(node: AccessibilityNodeInfo?) {
+                if (node == null) return
+                evaluateCandidate(node)
                 for (i in 0 until node.childCount) {
                     search(runCatching { node.getChild(i) }.getOrNull())
                 }
             }
             search(root)
-            return bestMatch
+            return bestNode
         }
 
         private fun performClickOnNodeOrParent(node: AccessibilityNodeInfo): Boolean {
             var curr: AccessibilityNodeInfo? = node
             var depth = 0
-            while (curr != null && depth < 6) {
+            while (curr != null && depth <= 6) {
                 if (curr.isClickable) {
                     val ok = runCatching { curr.performAction(AccessibilityNodeInfo.ACTION_CLICK) }.getOrDefault(false)
                     if (ok) return true
@@ -317,11 +664,17 @@ class LiaAccessibilityService : AccessibilityService() {
                 curr = runCatching { curr.parent }.getOrNull()
                 depth++
             }
-            // Sinon clic aux coordonnées du rectangle de l'élément
-            val rect = android.graphics.Rect()
-            node.getBoundsInScreen(rect)
-            if (!rect.isEmpty) {
-                return performTapExact(rect.centerX().toFloat(), rect.centerY().toFloat(), "Tap sur noeud")
+            // Sinon clic aux coordonnées du rectangle de l'élément (ou de son premier ancêtre visible avec des bornes non vides)
+            var boundsCursor: AccessibilityNodeInfo? = node
+            var boundsDepth = 0
+            while (boundsCursor != null && boundsDepth <= 6) {
+                val rect = android.graphics.Rect()
+                runCatching { boundsCursor.getBoundsInScreen(rect) }
+                if (!rect.isEmpty && rect.centerX() > 0 && rect.centerY() > 0) {
+                    return performTapExact(rect.centerX().toFloat(), rect.centerY().toFloat(), "Tap sur noeud")
+                }
+                boundsCursor = runCatching { boundsCursor.parent }.getOrNull()
+                boundsDepth++
             }
             return false
         }
@@ -351,16 +704,65 @@ class LiaAccessibilityService : AccessibilityService() {
             }.getOrDefault(false)
         }
 
+        private fun findPrimaryScrollableNode(roots: List<AccessibilityNodeInfo>): AccessibilityNodeInfo? {
+            for (root in roots) {
+                var found: AccessibilityNodeInfo? = null
+                fun walk(node: AccessibilityNodeInfo?) {
+                    if (node == null || found != null) return
+                    if (node.isScrollable && node.isVisibleToUser) {
+                        found = node
+                        return
+                    }
+                    for (i in 0 until node.childCount) {
+                        walk(runCatching { node.getChild(i) }.getOrNull())
+                    }
+                }
+                walk(root)
+                if (found != null) return found
+            }
+            return null
+        }
+
         /**
-         * Exécute un vrai geste de glissement / défilement (`SWIPE_UP`, `SWIPE_DOWN`, `SWIPE_LEFT`, `SWIPE_RIGHT`).
+         * Exécute un défilement hybride (Sémantique `ACTION_SCROLL_FORWARD`/`ACTION_SCROLL_BACKWARD` sur conteneur scrollable
+         * + fallback geste physique `GestureDescription` `SWIPE_UP`, `SWIPE_DOWN`, `SWIPE_LEFT`, `SWIPE_RIGHT`).
          */
         fun performSwipeGesture(direction: String): Boolean {
             val svc = instance ?: return false
+            val dirUpper = direction.uppercase().trim()
+            val roots = collectAllTargetWindowRoots(svc)
+
+            // 1. Tentative de défilement sémantique Android sur le conteneur scrollable principal
+            if (dirUpper in setOf("SWIPE_UP", "SCROLL_DOWN", "DOWN")) {
+                val scrollable = findPrimaryScrollableNode(roots)
+                if (scrollable != null) {
+                    val scrolledSemantically = runCatching {
+                        scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    }.getOrDefault(false)
+                    if (scrolledSemantically) {
+                        recordAction("↕️ Scroll sémantique (ACTION_SCROLL_FORWARD) exécuté")
+                        return true
+                    }
+                }
+            } else if (dirUpper in setOf("SWIPE_DOWN", "SCROLL_UP", "UP")) {
+                val scrollable = findPrimaryScrollableNode(roots)
+                if (scrollable != null) {
+                    val scrolledSemantically = runCatching {
+                        scrollable.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+                    }.getOrDefault(false)
+                    if (scrolledSemantically) {
+                        recordAction("↕️ Scroll sémantique (ACTION_SCROLL_BACKWARD) exécuté")
+                        return true
+                    }
+                }
+            }
+
+            // 2. Fallback geste physique via GestureDescription
             val metrics = svc.resources.displayMetrics
             val w = metrics.widthPixels.toFloat()
             val h = metrics.heightPixels.toFloat()
 
-            val (startX, startY, endX, endY) = when (direction.uppercase()) {
+            val (startX, startY, endX, endY) = when (dirUpper) {
                 "SWIPE_UP", "SCROLL_DOWN", "DOWN" -> listOf(w * 0.5f, h * 0.78f, w * 0.5f, h * 0.22f)
                 "SWIPE_DOWN", "SCROLL_UP", "UP" -> listOf(w * 0.5f, h * 0.24f, w * 0.5f, h * 0.78f)
                 "SWIPE_LEFT", "LEFT" -> listOf(w * 0.85f, h * 0.5f, w * 0.15f, h * 0.5f)
@@ -384,6 +786,100 @@ class LiaAccessibilityService : AccessibilityService() {
         }
 
         /**
+         * Active la barre de recherche interne de l'application ouverte (en cliquant sur l'icône/barre de recherche
+         * si le champ n'est pas encore déployé), y saisit [query] et soumet la recherche (`ACTION_IME_ENTER` + bouton rechercher).
+         */
+        fun activateAndTypeInSearchBar(context: Context, query: String): Boolean {
+            val cleanedQuery = query.trim()
+            if (cleanedQuery.isBlank()) return false
+
+            runCatching {
+                val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as? ClipboardManager
+                clipboard?.setPrimaryClip(ClipData.newPlainText("LIA_Search_Query", cleanedQuery))
+            }
+
+            val svc = instance ?: return false
+            var roots = collectAllTargetWindowRoots(svc)
+            var inputNode = roots.firstNotNullOfOrNull { findEditableInputNode(it, "recherch") }
+                ?: roots.firstNotNullOfOrNull { findEditableInputNode(it, "search") }
+                ?: roots.firstNotNullOfOrNull { findEditableInputNode(it, "") }
+
+            if (inputNode == null) {
+                val searchBarCandidates = listOf(
+                    "Rechercher dans les paramètres",
+                    "Search settings",
+                    "Rechercher",
+                    "Search",
+                    "Chercher",
+                    "search_action_bar",
+                    "search_bar",
+                    "action_search",
+                    "menu_search",
+                    "search_button",
+                    "search_src_text",
+                    "search_plate"
+                )
+                val clickedTrigger = searchBarCandidates.any { candidate ->
+                    clickNodeByTextStrict(candidate)
+                }
+                if (!clickedTrigger) {
+                    return false
+                }
+                // Attendre brièvement l'ouverture du champ de saisie (SearchView / SearchActivity)
+                if (android.os.Looper.myLooper() != android.os.Looper.getMainLooper()) {
+                    runCatching { Thread.sleep(600L) }
+                }
+                roots = collectAllTargetWindowRoots(svc)
+                inputNode = roots.firstNotNullOfOrNull { findEditableInputNode(it, "recherch") }
+                    ?: roots.firstNotNullOfOrNull { findEditableInputNode(it, "search") }
+                    ?: roots.firstNotNullOfOrNull { findEditableInputNode(it, "") }
+
+                if (inputNode == null) {
+                    // Si appelé depuis le thread principal, planifier l'injection dès que le champ apparaît (~550ms)
+                    automationScope.launch {
+                        delay(550L)
+                        val delayedRoots = collectAllTargetWindowRoots(svc)
+                        val delayedInput = delayedRoots.firstNotNullOfOrNull { findEditableInputNode(it, "") }
+                        if (delayedInput != null) {
+                            injectAndSubmitSearchQueryOnNode(delayedInput, cleanedQuery)
+                        }
+                    }
+                    recordAction("🔍 Barre de recherche ouverte pour « $cleanedQuery »")
+                    return true
+                }
+            }
+
+            return injectAndSubmitSearchQueryOnNode(inputNode, cleanedQuery)
+        }
+
+        private fun injectAndSubmitSearchQueryOnNode(inputNode: AccessibilityNodeInfo, query: String): Boolean {
+            runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
+            runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+            val args = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, query)
+            }
+            val setOk = runCatching {
+                inputNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            }.getOrDefault(false)
+
+            if (!setOk) {
+                runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }
+            }
+
+            // Soumettre via ACTION_IME_ENTER (API 30+) puis bouton de validation si présent
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                runCatching {
+                    inputNode.performAction(
+                        AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+                    )
+                }
+            }
+            clickSendOrSubmitButton()
+            recordAction("🔍 Recherche interne soumise : « ${query.take(28)} »")
+            return true
+        }
+
+        /**
          * Trouve le champ de saisie (EditText) sur l'écran actuel (ex: barre de prompt Gemini, barre de recherche Steam,
          * zone de message Messenger/WhatsApp/ChatGPT), y injecte [textToType] via `ACTION_SET_TEXT` et clique optionnellement sur Envoyer.
          */
@@ -400,9 +896,8 @@ class LiaAccessibilityService : AccessibilityService() {
             }
 
             val svc = instance ?: return false
-            val root = runCatching { svc.rootInActiveWindow }.getOrNull() ?: return false
-
-            val inputNode = findEditableInputNode(root, targetFieldHint)
+            val roots = collectAllTargetWindowRoots(svc)
+            val inputNode = roots.firstNotNullOfOrNull { findEditableInputNode(it, targetFieldHint) }
             if (inputNode != null) {
                 runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS) }
                 runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
@@ -415,6 +910,14 @@ class LiaAccessibilityService : AccessibilityService() {
 
                 if (!setOk) {
                     runCatching { inputNode.performAction(AccessibilityNodeInfo.ACTION_PASTE) }
+                }
+
+                if (autoClickSend && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    runCatching {
+                        inputNode.performAction(
+                            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+                        )
+                    }
                 }
 
                 recordAction("⌨️ Texte saisi dans le champ : « ${textToType.take(28)} »")
@@ -435,7 +938,7 @@ class LiaAccessibilityService : AccessibilityService() {
             val focused = runCatching { root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) }.getOrNull()
             if (focused != null && focused.isEditable) return focused
 
-            val lowerHint = hintQuery.lowercase()
+            val normHint = normalizeUiTextForMatch(hintQuery)
             var firstEditable: AccessibilityNodeInfo? = null
             var hintedEditable: AccessibilityNodeInfo? = null
 
@@ -444,13 +947,14 @@ class LiaAccessibilityService : AccessibilityService() {
                 val cls = node.className?.toString().orEmpty()
                 if (node.isEditable || cls.contains("EditText", ignoreCase = true) || cls.contains("AutoComplete", ignoreCase = true)) {
                     if (firstEditable == null) firstEditable = node
-                    if (lowerHint.isNotBlank()) {
-                        val t = node.text?.toString()?.lowercase().orEmpty()
-                        val d = node.contentDescription?.toString()?.lowercase().orEmpty()
+                    if (normHint.isNotBlank()) {
+                        val t = normalizeUiTextForMatch(node.text?.toString().orEmpty())
+                        val d = normalizeUiTextForMatch(node.contentDescription?.toString().orEmpty())
                         val h = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-                            node.hintText?.toString()?.lowercase().orEmpty()
+                            normalizeUiTextForMatch(node.hintText?.toString().orEmpty())
                         } else ""
-                        if (t.contains(lowerHint) || d.contains(lowerHint) || h.contains(lowerHint)) {
+                        val id = normalizeUiTextForMatch(node.viewIdResourceName?.substringAfterLast('/').orEmpty())
+                        if (t.contains(normHint) || d.contains(normHint) || h.contains(normHint) || id.contains(normHint)) {
                             hintedEditable = node
                             return
                         }
@@ -470,7 +974,14 @@ class LiaAccessibilityService : AccessibilityService() {
                 "send", "submit", "search_button", "btn_send", "right_icon"
             )
             for (kw in sendKeywords) {
-                if (clickNodeByTextOrFallback(kw, fallbackXRatio = 0.90f, fallbackYRatio = 0.90f)) {
+                if (clickNodeByTextOrFallback(
+                        targetText = kw,
+                        fallbackXRatio = 0.90f,
+                        fallbackYRatio = 0.90f,
+                        allowCriticalIrreversible = false,
+                        allowCoordinateFallback = false
+                    )
+                ) {
                     return true
                 }
             }

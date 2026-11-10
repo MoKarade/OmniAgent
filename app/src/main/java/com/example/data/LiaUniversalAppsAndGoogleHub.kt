@@ -251,8 +251,15 @@ object LiaUniversalAppsAndGoogleHub {
             for (info in resolveInfos) {
                 val pkg = info.activityInfo?.packageName?.trim().orEmpty()
                 if (pkg.isBlank() || pkg == context.packageName || !seenPackages.add(pkg)) continue
-                val label = info.loadLabel(pm)?.toString()?.trim().orEmpty().ifBlank {
+                val rawLabel = info.loadLabel(pm)?.toString()?.trim().orEmpty().ifBlank {
                     pkg.substringAfterLast('.')
+                }
+                val label = if (pkg.equals("com.android.settings", ignoreCase = true) &&
+                    rawLabel.equals("Settings", ignoreCase = true)
+                ) {
+                    "Paramètres"
+                } else {
+                    rawLabel
                 }
                 val isGoogle = pkg.startsWith("com.google.") || pkg.startsWith("com.android.chrome")
                 discovered.add(
@@ -344,6 +351,117 @@ object LiaUniversalAppsAndGoogleHub {
         }
     }
 
+    private val LEADING_APP_DETERMINER_REGEX = Regex(
+        "^(?:dans|sur|vers|chez|ouvre|ouvrir|lance|lancer|va|aller|de\\s+la|du|des|les|le|la|un|une|mon|ma|mes|ton|ta|tes|notre|nos|votre|vos|application|applications|appli|applis|app|apps)\\s+",
+        RegexOption.IGNORE_CASE
+    )
+    private val LEADING_APOSTROPHE_PREFIX_REGEX = Regex(
+        "^(?:l'|d')",
+        RegexOption.IGNORE_CASE
+    )
+
+    private val SETTINGS_NORMALIZED_ALIASES = setOf(
+        "parametres", "parametre", "reglages", "reglage", "settings", "setting",
+        "configuration", "systeme", "parametres android", "parametres systeme",
+        "system settings", "com.android.settings"
+    )
+
+    private val BILINGUAL_SYSTEM_APP_ALIASES: Map<String, Pair<String, String>> = mapOf(
+        "parametres" to ("com.android.settings" to "Paramètres"),
+        "parametre" to ("com.android.settings" to "Paramètres"),
+        "reglages" to ("com.android.settings" to "Paramètres"),
+        "reglage" to ("com.android.settings" to "Paramètres"),
+        "settings" to ("com.android.settings" to "Paramètres"),
+        "setting" to ("com.android.settings" to "Paramètres"),
+        "configuration" to ("com.android.settings" to "Paramètres"),
+        "systeme" to ("com.android.settings" to "Paramètres"),
+        "parametres android" to ("com.android.settings" to "Paramètres"),
+        "parametres systeme" to ("com.android.settings" to "Paramètres"),
+        "system settings" to ("com.android.settings" to "Paramètres"),
+        "horloge" to ("com.google.android.deskclock" to "Horloge & Réveil"),
+        "reveil" to ("com.google.android.deskclock" to "Horloge & Réveil"),
+        "alarme" to ("com.google.android.deskclock" to "Horloge & Réveil"),
+        "minuteur" to ("com.google.android.deskclock" to "Horloge & Réveil"),
+        "clock" to ("com.google.android.deskclock" to "Horloge & Réveil"),
+        "agenda" to ("com.google.android.calendar" to "Google Agenda"),
+        "calendrier" to ("com.google.android.calendar" to "Google Agenda"),
+        "calendar" to ("com.google.android.calendar" to "Google Agenda"),
+        "google calendar" to ("com.google.android.calendar" to "Google Agenda"),
+        "google agenda" to ("com.google.android.calendar" to "Google Agenda"),
+        "messages" to ("com.google.android.apps.messaging" to "Messages SMS"),
+        "sms" to ("com.google.android.apps.messaging" to "Messages SMS"),
+        "messagerie" to ("com.google.android.apps.messaging" to "Messages SMS"),
+        "contacts" to ("com.google.android.contacts" to "Contacts"),
+        "google contacts" to ("com.google.android.contacts" to "Contacts"),
+        "chrome" to ("com.android.chrome" to "Google Chrome"),
+        "google chrome" to ("com.android.chrome" to "Google Chrome"),
+        "navigateur" to ("com.android.chrome" to "Google Chrome"),
+        "browser" to ("com.android.chrome" to "Google Chrome"),
+        "gmail" to ("com.google.android.gm" to "Gmail"),
+        "mail" to ("com.google.android.gm" to "Gmail"),
+        "youtube" to ("com.google.android.youtube" to "YouTube"),
+        "maps" to ("com.google.android.apps.maps" to "Google Maps"),
+        "google maps" to ("com.google.android.apps.maps" to "Google Maps"),
+        "photos" to ("com.google.android.apps.photos" to "Google Photos"),
+        "google photos" to ("com.google.android.apps.photos" to "Google Photos"),
+        "drive" to ("com.google.android.apps.docs" to "Google Drive"),
+        "google drive" to ("com.google.android.apps.docs" to "Google Drive"),
+        "play store" to ("com.android.vending" to "Google Play Store"),
+        "google play" to ("com.android.vending" to "Google Play Store")
+    )
+
+    /**
+     * Normalise une requête de nom d'application en retirant de manière répétée les articles,
+     * déterminants et préfixes français ("les", "le", "la", "l'", "mon", "ma", "mes", "un", "une",
+     * "des", "du", "de la", "dans", "sur", "application", "app", "appli"), ainsi que les accents (NFD).
+     */
+    fun normalizeAppQuery(raw: String): String {
+        if (raw.isBlank()) return ""
+        val preCleaned = raw
+            .replace('’', '\'')
+            .replace('‘', '\'')
+            .trim()
+            .replace(Regex("[?!.…,:;]+$"), "")
+            .trim()
+            .removeSurrounding("\"")
+            .removeSurrounding("«", "»")
+            .trim()
+            .replace(Regex("[?!.…,:;]+$"), "")
+            .trim()
+        val decomposed = java.text.Normalizer.normalize(preCleaned, java.text.Normalizer.Form.NFD)
+        var cleaned = decomposed.replace(Regex("\\p{Mn}+"), "")
+            .lowercase()
+            .replace(Regex("\\s+"), " ")
+            .trim()
+
+        var changed = true
+        var guard = 0
+        while (changed && guard < 10) {
+            changed = false
+            guard++
+            val withoutApostrophe = LEADING_APOSTROPHE_PREFIX_REGEX.replace(cleaned, "").trim()
+            if (withoutApostrophe != cleaned && withoutApostrophe.isNotBlank()) {
+                cleaned = withoutApostrophe
+                changed = true
+            }
+            val withoutWord = LEADING_APP_DETERMINER_REGEX.replace(cleaned, "").trim()
+            if (withoutWord != cleaned && withoutWord.isNotBlank()) {
+                cleaned = withoutWord
+                changed = true
+            }
+        }
+        return cleaned
+    }
+
+    fun isSettingsAliasQuery(rawQuery: String): Boolean {
+        val norm = normalizeAppQuery(rawQuery)
+        return norm in SETTINGS_NORMALIZED_ALIASES
+    }
+
+    fun setInstalledAppsForTesting(apps: List<InstalledPhoneAppItem>) {
+        _state.update { it.copy(installedPhoneApps = apps) }
+    }
+
     /**
      * Recherche floue universelle parmi TOUTES les applications installées sur le téléphone
      * (y compris celles ajoutées après coup) et tout l'écosystème Google.
@@ -355,26 +473,66 @@ object LiaUniversalAppsAndGoogleHub {
         } else {
             _state.value.installedPhoneApps
         }
-        val clean = rawQuery.lowercase().trim()
+        val clean = normalizeAppQuery(rawQuery)
         if (clean.isBlank()) return null
 
-        // 1. Exact or substring match on app label or package segment
-        val directMatch = apps.firstOrNull { app ->
-            val lbl = app.appLabel.lowercase()
-            val pkgShort = app.packageName.substringAfterLast('.').lowercase()
-            lbl == clean || clean.contains(lbl) || lbl.contains(clean) || pkgShort == clean
+        // 0. Résolution bilingue prioritaire pour Paramètres / Settings et applications système canoniques
+        if (clean in SETTINGS_NORMALIZED_ALIASES) {
+            val existingSettings = apps.firstOrNull {
+                it.packageName.equals("com.android.settings", ignoreCase = true)
+            }
+            return existingSettings?.copy(appLabel = "Paramètres")
+                ?: InstalledPhoneAppItem(
+                    packageName = "com.android.settings",
+                    appLabel = "Paramètres",
+                    emoji = "⚙️",
+                    isGoogleApp = false,
+                    isNewlyInstalledAfterBoot = false,
+                    discoveredAt = ""
+                )
         }
-        if (directMatch != null) return directMatch
 
-        // 2. Fuzzy similarity match via SafeContactResolver's Levenshtein + Bigram scorer
-        val scored = apps.map { app ->
-            val scoreLabel = SafeContactResolver.computeFuzzySimilarityPercent(clean, app.appLabel.lowercase())
-            val scorePkg = SafeContactResolver.computeFuzzySimilarityPercent(
-                clean,
-                app.packageName.substringAfterLast('.').lowercase()
-            )
-            app to maxOf(scoreLabel, scorePkg)
-        }.maxByOrNull { it.second }
+        BILINGUAL_SYSTEM_APP_ALIASES[clean]?.let { (canonicalPkg, canonicalLabel) ->
+            val matchedByPkg = apps.firstOrNull { it.packageName.equals(canonicalPkg, ignoreCase = true) }
+            if (matchedByPkg != null) return matchedByPkg
+            if (canonicalPkg == "com.android.settings") {
+                return InstalledPhoneAppItem(canonicalPkg, canonicalLabel, "⚙️", false, false, "")
+            }
+        }
+
+        // 1. Exact match on normalized app label or package segment
+        val exactMatch = apps.firstOrNull { app ->
+            val lblNorm = normalizeAppQuery(app.appLabel)
+            val pkgShort = app.packageName.substringAfterLast('.').lowercase()
+            lblNorm == clean || pkgShort == clean || app.packageName.equals(clean, ignoreCase = true)
+        }
+        if (exactMatch != null) return exactMatch
+
+        // 2. Safe substring match (preventing short labels length < 3 from false-matching clean.contains(lbl))
+        val substringMatch = apps.firstOrNull { app ->
+            val lblNorm = normalizeAppQuery(app.appLabel)
+            val pkgShort = app.packageName.substringAfterLast('.').lowercase()
+            (lblNorm.length >= 3 && clean.contains(lblNorm)) ||
+                (clean.length >= 3 && lblNorm.contains(clean)) ||
+                (pkgShort.length >= 3 && (clean.contains(pkgShort) || pkgShort.contains(clean)))
+        }
+        if (substringMatch != null) return substringMatch
+
+        // 3. Fuzzy similarity match via SafeContactResolver's Levenshtein + Bigram scorer
+        val scored = apps
+            .filter { normalizeAppQuery(it.appLabel).length >= 3 || it.packageName.substringAfterLast('.').length >= 3 }
+            .map { app ->
+                val lblNorm = normalizeAppQuery(app.appLabel)
+                val pkgShort = app.packageName.substringAfterLast('.').lowercase()
+                val scoreLabel = if (lblNorm.length >= 3) {
+                    SafeContactResolver.computeFuzzySimilarityPercent(clean, lblNorm)
+                } else 0
+                val scorePkg = if (pkgShort.length >= 3) {
+                    SafeContactResolver.computeFuzzySimilarityPercent(clean, pkgShort)
+                } else 0
+                app to maxOf(scoreLabel, scorePkg)
+            }
+            .maxByOrNull { it.second }
 
         return if (scored != null && scored.second >= 62) scored.first else null
     }
